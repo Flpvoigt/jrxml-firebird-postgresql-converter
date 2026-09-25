@@ -66,11 +66,7 @@ A conversão garante estrutura XML e tradução sintática. A validação final 
 deve executar as consultas com parâmetros reais no PostgreSQL de destino e
 compilar/renderizar os JRXML com a versão de Jasper utilizada no ambiente.
 
-## Contribuição
+## Uso
 
-Contribuições são bem-vindas. Consulte o
-[`CONTRIBUTING.md`](CONTRIBUTING.md) antes de abrir uma issue ou pull request.
-
-## Licença
-
-Distribuído sob a licença MIT. Consulte [`LICENSE`](LICENSE).
+Código de uso interno. A publicação do repositório não concede licença para
+copiar, modificar ou redistribuir o projeto.
