@@ -1,0 +1,34 @@
+name: Relatar erro
+description: Informe um comportamento incorreto ou uma falha de conversão.
+title: "[Erro]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Não inclua credenciais, dados ou consultas pertencentes a clientes.
+  - type: textarea
+    id: descricao
+    attributes:
+      label: Descrição
+      description: Explique o comportamento observado e o esperado.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducao
+    attributes:
+      label: Como reproduzir
+      description: Forneça um exemplo mínimo e anonimizado.
+    validations:
+      required: true
+  - type: input
+    id: java
+    attributes:
+      label: Versão do Java
+      placeholder: "21.0.x"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Saída relevante
+      render: shell

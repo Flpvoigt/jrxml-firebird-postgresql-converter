@@ -1,0 +1,19 @@
+name: Sugerir melhoria
+description: Proponha uma nova conversão ou melhoria técnica.
+title: "[Melhoria]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: necessidade
+    attributes:
+      label: Necessidade
+      description: Qual problema a melhoria deve resolver?
+    validations:
+      required: true
+  - type: textarea
+    id: proposta
+    attributes:
+      label: Solução proposta
+      description: Explique o comportamento desejado com exemplos anônimos.
+    validations:
+      required: true

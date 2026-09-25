@@ -1,0 +1,7 @@
+/target/
+/output/
+/.github/modernize/
+/.idea/
+/.vscode/
+*.iml
+*.log
