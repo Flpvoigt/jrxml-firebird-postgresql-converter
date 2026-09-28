@@ -5,6 +5,7 @@ public record ConversionSummary(
         int queryEntries,
         long convertedQueries,
         long emptyQueries,
+        long ignoredQueries,
         long failedQueries,
         int subreportReferences,
         int resolvedSubreports,

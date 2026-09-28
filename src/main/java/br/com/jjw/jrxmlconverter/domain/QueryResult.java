@@ -23,6 +23,11 @@ public record QueryResult(
         return new QueryResult(file, index, ConversionStatus.EMPTY, "", "", 0, "QueryString vazia");
     }
 
+    public static QueryResult ignored(Path file, int index, String original, String language) {
+        return new QueryResult(file, index, ConversionStatus.IGNORED, original, original, 0,
+                "QueryString ignorada porque utiliza a linguagem " + language + ".");
+    }
+
     public static QueryResult failed(Path file, int index, String original, String message) {
         return new QueryResult(file, index, ConversionStatus.FAILED, original, original, 0, message);
     }

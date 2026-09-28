@@ -21,15 +21,44 @@ somente leitura e cada tipo de arquivo é gravado em uma saída separada.
 ## Regras de segurança
 
 - Nunca modificar arquivos do diretório de entrada.
+- Aceitar como entrada um arquivo isolado ou uma árvore inteira de diretórios.
 - Recusar um diretório de saída igual ou interno ao diretório de entrada.
 - Desabilitar entidades externas e DTDs durante a leitura XML.
 - Preservar o SQL original quando uma consulta não puder ser convertida.
+- Isolar falhas por arquivo para que um arquivo defeituoso não interrompa o lote.
+- Ignorar explicitamente linguagens Jasper que não sejam SQL, como JSON e XPath.
 - Não converter isoladamente fragmentos ou SQLs montados por concatenação.
+- Reunir scripts Groovy em uma única pasta e rejeitar nomes duplicados.
+- Preservar a estrutura relativa dos JRXML por causa dos subreports.
+- No modo multiprojeto, separar a saída pela primeira pasta da entrada e agrupar
+  Groovy pela categoria localizada abaixo de `resources`.
+- Ignorar diretórios gerados e metadados de ferramentas durante a descoberta.
 - Registrar arquivo e linha dos scripts que exigem revisão manual.
 - Retornar código de saída 3 quando existir falha ou revisão pendente.
+
+## Estratégias de conversão
+
+A estratégia principal usa o parser do jOOQ com entrada Firebird e renderização
+PostgreSQL. Antes do parser, parâmetros Jasper e interpolações Groovy recebem
+tokens temporários; depois da conversão, os conteúdos originais são restaurados.
+
+Uma segunda estratégia, usada somente quando um SQL Groovy dinâmico não pode ser
+analisado integralmente, aplica transformações determinísticas sem reorganizar a
+consulta. Essa contingência somente produz saída quando remove construções
+Firebird conhecidas e não encontra outra construção incompatível restante.
+
+As regras adicionais cobrem paginação no nível principal e em subconsultas,
+funções selecionáveis no `FROM`, `DATEADD`, `DATEDIFF`, `LIST`, `GEN_ID`,
+`ASCII_CHAR`, `STARTING WITH`, `WITH LOCK`, `RDB$DATABASE` e o upsert com
+`MATCHING` explícito.
 
 ## Limites atuais
 
 A análise confirma a conversão sintática e preserva a estrutura dos arquivos.
 A homologação funcional exige executar relatórios e scripts contra o PostgreSQL
 real, com schema, functions, parâmetros e dados utilizados pelo cliente.
+
+Upserts sem `MATCHING` precisam de metadados de chave primária ou única. Fluxos
+Groovy que constroem um SQL por concatenação ou em várias atribuições exigem uma
+etapa futura de análise de fluxo do código; converter cada literal isoladamente
+poderia mudar a posição de cláusulas e gerar SQL inválido.

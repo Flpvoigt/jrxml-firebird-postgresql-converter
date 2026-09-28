@@ -15,7 +15,14 @@ import java.util.regex.Pattern;
 
 public final class GroovyProcessor {
     private static final Pattern COMPLETE_SQL = Pattern.compile(
-            "(?is)^\\s*(?:SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|EXECUTE\\s+BLOCK)\\b");
+            "(?is)^\\s*(?:"
+                    + "SELECT\\s+.+|"
+                    + "WITH\\s+.+|"
+                    + "INSERT\\s+INTO\\s+.+|"
+                    + "UPDATE(?:\\s+OR\\s+INSERT\\s+INTO)?\\s+.+|"
+                    + "DELETE\\s+FROM\\s+.+|"
+                    + "MERGE\\s+INTO\\s+.+|"
+                    + "EXECUTE\\s+BLOCK\\s+.+)$");
     private static final Pattern SQL_FRAGMENT = Pattern.compile(
             "(?is)^\\s*(?:AND|OR|WHERE|JOIN|LEFT\\s+JOIN|RIGHT\\s+JOIN|INNER\\s+JOIN|"
                     + "ORDER\\s+BY|GROUP\\s+BY|HAVING|SET|VALUES)\\b.*\\b(?:SELECT|INSERT|UPDATE|DELETE)\\b");
@@ -60,6 +67,21 @@ public final class GroovyProcessor {
                 } else if (query.message().startsWith("UPDATE OR INSERT sem MATCHING")) {
                     result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
                             query.message());
+                } else if (!tokenized.tokens().isEmpty()) {
+                    QueryResult lenient = sqlConverter.convertLenientDynamic(
+                            relativeFile, sqlIndex, tokenized.sql());
+                    if (lenient.succeeded()) {
+                        replacement = restoreInterpolations(lenient.convertedSql(), tokenized.tokens());
+                        replacement = preserveOuterWhitespace(sql, replacement);
+                        result = GroovySqlResult.converted(relativeFile, sqlIndex, literal.line(), sql,
+                                replacement, tokenized.tokens().size());
+                    } else {
+                        result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                                "SQL dinâmico não pôde ser analisado com segurança: " + query.message());
+                    }
+                } else if (isDynamicallyExtended(source, literal)) {
+                    result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                            "SQL montado em várias etapas; é necessário analisar a expressão completa.");
                 } else {
                     result = GroovySqlResult.failed(relativeFile, sqlIndex, literal.line(), sql,
                             tokenized.tokens().size(), query.message());
@@ -82,6 +104,19 @@ public final class GroovyProcessor {
         int after = nextNonWhitespace(source, literal.delimiterEnd());
         return (before >= 0 && source.charAt(before) == '+')
                 || (after < source.length() && source.charAt(after) == '+');
+    }
+
+    private static boolean isDynamicallyExtended(String source, StringLiteral literal) {
+        int lineStart = source.lastIndexOf('\n', literal.delimiterStart()) + 1;
+        String prefix = source.substring(lineStart, literal.delimiterStart());
+        Matcher assignment = Pattern.compile("(?:def\\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*$")
+                .matcher(prefix);
+        if (!assignment.find()) {
+            return false;
+        }
+        String variable = assignment.group(1);
+        return Pattern.compile("(?m)^\\s*" + Pattern.quote(variable) + "\\s*\\+=")
+                .matcher(source.substring(literal.delimiterEnd())).find();
     }
 
     private static int previousNonWhitespace(String source, int index) {
