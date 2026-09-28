@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,8 +25,14 @@ public final class FirebirdToPostgresSqlConverter {
                     + "DATEADD\\s*\\(\\s*1\\s+MONTH\\s+TO\\s+([A-Z_][A-Z0-9_$.]*)\\s*\\)\\s*\\)\\s+"
                     + "DAY\\s+TO\\s+DATEADD\\s*\\(\\s*1\\s+MONTH\\s+TO\\s+\\1\\s*\\)\\s*\\)");
     private static final Pattern NESTED_SELECT = Pattern.compile("(?i)\\(\\s*SELECT\\b");
+    private static final Pattern GEN_ID_ONE = Pattern.compile(
+            "(?i)\\bGEN_ID\\s*\\(\\s*([A-Z_][A-Z0-9_$]*)\\s*,\\s*1\\s*\\)");
+    private static final Pattern GEN_ID_ZERO = Pattern.compile(
+            "(?i)\\bGEN_ID\\s*\\(\\s*([A-Z_][A-Z0-9_$]*)\\s*,\\s*0\\s*\\)");
+    private static final Pattern TRAILING_SEMICOLON = Pattern.compile("(?s);\\s*$");
 
     private final DSLContext postgres;
+    private final FirebirdUpsertConverter upsertConverter = new FirebirdUpsertConverter();
 
     public FirebirdToPostgresSqlConverter() {
         Settings settings = new Settings()
@@ -40,14 +47,35 @@ public final class FirebirdToPostgresSqlConverter {
             return QueryResult.empty(file, queryIndex);
         }
 
-        ProtectedSql protectedSql = protect(originalSql);
+        boolean terminated = TRAILING_SEMICOLON.matcher(originalSql).find();
+        String sqlToConvert = terminated
+                ? TRAILING_SEMICOLON.matcher(originalSql).replaceFirst("") : originalSql;
+        ProtectedSql protectedSql = protect(sqlToConvert);
         try {
+            if (startsWithUpdateOrInsert(protectedSql.sql())) {
+                Optional<String> upsert = upsertConverter.convert(protectedSql.sql());
+                if (upsert.isEmpty()) {
+                    return QueryResult.failed(file, queryIndex, originalSql,
+                            "UPDATE OR INSERT sem MATCHING explícito; a chave de conflito não pode ser inferida com segurança.");
+                }
+                String converted = restore(upsert.get(), protectedSql.tableFunctions());
+                converted = restore(converted, protectedSql.jasperExpressions());
+                converted = restore(converted, protectedSql.postgresExpressions());
+                if (terminated) {
+                    converted += ";";
+                }
+                return QueryResult.converted(file, queryIndex, originalSql, converted,
+                        protectedSql.jasperExpressions().size());
+            }
             Query parsed = postgres.parser().parseQuery(protectedSql.sql());
             String converted = postgres.render(parsed);
             converted = restore(converted, protectedSql.tableFunctions());
             converted = restore(converted, protectedSql.jasperExpressions());
             converted = restore(converted, protectedSql.postgresExpressions());
             converted = rewriteFirebirdList(converted);
+            if (terminated) {
+                converted += ";";
+            }
             return QueryResult.converted(
                     file, queryIndex, originalSql, converted, protectedSql.jasperExpressions().size());
         } catch (Exception exception) {
@@ -55,8 +83,13 @@ public final class FirebirdToPostgresSqlConverter {
         }
     }
 
+    private static boolean startsWithUpdateOrInsert(String sql) {
+        return sql.matches("(?is)^\\s*UPDATE\\s+OR\\s+INSERT\\b.*");
+    }
+
     private ProtectedSql protect(String sql) {
-        TokenizedSql postgresExpressions = protectLastDayOfMonth(sql);
+        String compatibleSql = rewriteLegacyFunctions(rewriteFirebirdList(sql));
+        TokenizedSql postgresExpressions = protectLastDayOfMonth(compatibleSql);
         Matcher matcher = JASPER_EXPRESSION.matcher(postgresExpressions.sql());
         StringBuilder text = new StringBuilder(sql.length());
         Map<String, String> jasperExpressions = new LinkedHashMap<>();
@@ -144,10 +177,21 @@ public final class FirebirdToPostgresSqlConverter {
 
     private static String rewriteFirebirdList(String sql) {
         String rewritten = sql.replaceAll(
-                "(?is)(\\bIN\\s*\\(\\s*SELECT\\s+)LIST\\s*\\(\\s*([^()]+?)\\s*\\)", "$1$2");
+                "(?is)(\\bIN\\s*\\(\\s*SELECT\\s+)LIST\\s*\\(\\s*(?:DISTINCT\\s+)?([^()]+?)\\s*\\)", "$1$2");
+        rewritten = rewritten.replaceAll(
+                "(?is)\\bLIST\\s*\\(\\s*DISTINCT\\s+([^()]+?)\\s*\\)",
+                "string_agg(DISTINCT cast($1 as varchar), ',')");
         return rewritten.replaceAll(
                 "(?is)\\bLIST\\s*\\(\\s*([^()]+?)\\s*\\)",
                 "string_agg(cast($1 as varchar), ',')");
+    }
+
+    private static String rewriteLegacyFunctions(String sql) {
+        Matcher one = GEN_ID_ONE.matcher(sql);
+        String rewritten = one.replaceAll(match -> "nextval('" + match.group(1) + "')");
+        Matcher zero = GEN_ID_ZERO.matcher(rewritten);
+        rewritten = zero.replaceAll(match -> "currval('" + match.group(1) + "')");
+        return rewritten.replaceAll("(?i)\\bASCII_CHAR\\s*\\(", "CHR(");
     }
 
     private static boolean isSqlSyntaxFunction(String name) {

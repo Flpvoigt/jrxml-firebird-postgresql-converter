@@ -3,6 +3,7 @@ package br.com.jjw.jrxmlconverter;
 import br.com.jjw.jrxmlconverter.cli.CommandLineOptions;
 import br.com.jjw.jrxmlconverter.domain.ConversionRun;
 import br.com.jjw.jrxmlconverter.domain.ConversionSummary;
+import br.com.jjw.jrxmlconverter.groovy.GroovyProcessor;
 import br.com.jjw.jrxmlconverter.jrxml.JrxmlProcessor;
 import br.com.jjw.jrxmlconverter.report.ConversionReportWriter;
 import br.com.jjw.jrxmlconverter.service.ConversionService;
@@ -39,9 +40,10 @@ public final class JrxmlConverterApplication {
 
             if (!options.dryRun()) {
                 new ConversionReportWriter().write(output, run);
-                System.out.println("Relatório: " + output.resolve("conversion-report.csv"));
+                System.out.println("Relatório JRXML: " + output.resolve("jrxml/conversion-report.csv"));
+                System.out.println("Relatório Groovy: " + output.resolve("groovy/conversion-report.csv"));
             }
-            return run.summary().failedQueries() > 0 ? 3 : 0;
+            return run.summary().hasProblems() ? 3 : 0;
         } catch (IllegalArgumentException exception) {
             System.err.println("ERRO: " + exception.getMessage());
             System.err.println();
@@ -57,7 +59,8 @@ public final class JrxmlConverterApplication {
     private static ConversionService createService() {
         var sqlConverter = new FirebirdToPostgresSqlConverter();
         return new ConversionService(
-                new SecureXmlParser(), new SubreportInspector(), new JrxmlProcessor(sqlConverter));
+                new SecureXmlParser(), new SubreportInspector(), new JrxmlProcessor(sqlConverter),
+                new GroovyProcessor(sqlConverter));
     }
 
     private static void printSummary(Path input, Path output, CommandLineOptions options,
@@ -67,27 +70,32 @@ public final class JrxmlConverterApplication {
         if (output != null) {
             System.out.println("Saída: " + output);
         }
-        System.out.println("JRXML: " + summary.files());
-        System.out.println((options.dryRun() ? "Consultas validadas: " : "Consultas convertidas: ")
+        System.out.println("JRXML: " + summary.jrxmlFiles());
+        System.out.println((options.dryRun() ? "Consultas JRXML validadas: " : "Consultas JRXML convertidas: ")
                 + summary.convertedQueries());
-        System.out.println("Consultas vazias: " + summary.emptyQueries());
-        System.out.println("Falhas: " + summary.failedQueries());
+        System.out.println("Consultas JRXML vazias: " + summary.emptyQueries());
+        System.out.println("Falhas em JRXML: " + summary.failedQueries());
         System.out.println("Subreports resolvidos: " + summary.resolvedSubreports()
                 + "/" + summary.subreportReferences());
+        System.out.println("Groovy: " + summary.groovyFiles());
+        System.out.println((options.dryRun() ? "SQLs Groovy validados: " : "SQLs Groovy convertidos: ")
+                + summary.convertedGroovySql());
+        System.out.println("SQLs Groovy para revisão: " + summary.reviewGroovySql());
+        System.out.println("Falhas em Groovy: " + summary.failedGroovySql());
     }
 
     private static void printUsage() {
         System.out.println("""
                 Uso:
                   java -jar target/jrxml-converter-0.2.0-SNAPSHOT.jar \
-                    --input <diretorio-jrxml> --output <diretorio-saida> [--overwrite]
+                    --input <diretorio-origem> --output <diretorio-saida> [--overwrite]
 
                   java -jar target/jrxml-converter-0.2.0-SNAPSHOT.jar \
-                    --input <diretorio-jrxml> --dry-run
+                    --input <diretorio-origem> --dry-run
 
                 Opções:
-                  --input       Raiz pesquisada recursivamente por arquivos .jrxml.
-                  --output      Raiz onde serão gravadas as cópias convertidas.
+                  --input       Raiz pesquisada recursivamente por arquivos .jrxml e .groovy.
+                  --output      Raiz das saídas separadas nas pastas jrxml e groovy.
                   --overwrite   Permite substituir arquivos existentes somente na saída.
                   --dry-run     Analisa e converte em memória, sem escrever arquivos.
                   --help        Exibe esta ajuda.

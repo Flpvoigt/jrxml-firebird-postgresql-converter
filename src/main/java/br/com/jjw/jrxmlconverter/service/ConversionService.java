@@ -2,6 +2,7 @@ package br.com.jjw.jrxmlconverter.service;
 
 import br.com.jjw.jrxmlconverter.cli.CommandLineOptions;
 import br.com.jjw.jrxmlconverter.domain.*;
+import br.com.jjw.jrxmlconverter.groovy.GroovyProcessor;
 import br.com.jjw.jrxmlconverter.jrxml.JrxmlProcessor;
 import br.com.jjw.jrxmlconverter.xml.SecureXmlParser;
 import br.com.jjw.jrxmlconverter.xml.SubreportInspector;
@@ -20,12 +21,14 @@ public final class ConversionService {
     private final SecureXmlParser xmlParser;
     private final SubreportInspector subreportInspector;
     private final JrxmlProcessor jrxmlProcessor;
+    private final GroovyProcessor groovyProcessor;
 
     public ConversionService(SecureXmlParser xmlParser, SubreportInspector subreportInspector,
-                             JrxmlProcessor jrxmlProcessor) {
+                             JrxmlProcessor jrxmlProcessor, GroovyProcessor groovyProcessor) {
         this.xmlParser = xmlParser;
         this.subreportInspector = subreportInspector;
         this.jrxmlProcessor = jrxmlProcessor;
+        this.groovyProcessor = groovyProcessor;
     }
 
     public ConversionRun execute(CommandLineOptions options) throws Exception {
@@ -33,12 +36,17 @@ public final class ConversionService {
         Path output = options.output() == null ? null : options.output().toAbsolutePath().normalize();
         validatePaths(input, output, options.dryRun());
 
-        List<Path> files = findJrxmlFiles(input);
+        List<Path> jrxmlFiles = findFiles(input, ".jrxml");
+        List<Path> groovyFiles = findFiles(input, ".groovy");
+        if (jrxmlFiles.isEmpty() && groovyFiles.isEmpty()) {
+            throw new IllegalArgumentException("Nenhum arquivo .jrxml ou .groovy encontrado em " + input);
+        }
         List<QueryResult> queryResults = new ArrayList<>();
+        List<GroovySqlResult> groovyResults = new ArrayList<>();
         int subreportReferences = 0;
         int resolvedSubreports = 0;
 
-        for (Path source : files) {
+        for (Path source : jrxmlFiles) {
             Path relative = input.relativize(source);
             String xml = Files.readString(source, StandardCharsets.UTF_8);
             Document document = xmlParser.parse(xml, source);
@@ -49,13 +57,24 @@ public final class ConversionService {
             JrxmlConversion conversion = jrxmlProcessor.convert(relative, xml, document);
             queryResults.addAll(conversion.queryResults());
             if (!options.dryRun()) {
-                writeOutput(output, relative, conversion.xml(), options.overwrite());
+                writeOutput(output.resolve("jrxml"), relative, conversion.xml(), options.overwrite());
+            }
+        }
+
+        for (Path source : groovyFiles) {
+            Path relative = input.relativize(source);
+            String groovy = Files.readString(source, StandardCharsets.UTF_8);
+            GroovyConversion conversion = groovyProcessor.convert(relative, groovy);
+            groovyResults.addAll(conversion.sqlResults());
+            if (!options.dryRun()) {
+                writeOutput(output.resolve("groovy"), relative, conversion.source(), options.overwrite());
             }
         }
 
         ConversionSummary summary = summarize(
-                files.size(), queryResults, subreportReferences, resolvedSubreports);
-        return new ConversionRun(summary, queryResults);
+                jrxmlFiles.size(), queryResults, subreportReferences, resolvedSubreports,
+                groovyFiles.size(), groovyResults);
+        return new ConversionRun(summary, queryResults, groovyResults);
     }
 
     private static void validatePaths(Path input, Path output, boolean dryRun) throws Exception {
@@ -73,16 +92,13 @@ public final class ConversionService {
         }
     }
 
-    private static List<Path> findJrxmlFiles(Path input) throws Exception {
+    private static List<Path> findFiles(Path input, String extension) throws Exception {
         try (Stream<Path> paths = Files.walk(input)) {
-            List<Path> files = paths.filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jrxml"))
+            return paths.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT)
+                            .endsWith(extension))
                     .sorted(Comparator.naturalOrder())
                     .toList();
-            if (files.isEmpty()) {
-                throw new IllegalArgumentException("Nenhum arquivo .jrxml encontrado em " + input);
-            }
-            return files;
         }
     }
 
@@ -95,11 +111,20 @@ public final class ConversionService {
         Files.writeString(destination, xml, StandardCharsets.UTF_8);
     }
 
-    private static ConversionSummary summarize(int files, List<QueryResult> results,
-                                                int references, int resolved) {
+    private static ConversionSummary summarize(int jrxmlFiles, List<QueryResult> results,
+                                                int references, int resolved,
+                                                int groovyFiles, List<GroovySqlResult> groovyResults) {
         long converted = results.stream().filter(r -> r.status() == ConversionStatus.CONVERTED).count();
         long empty = results.stream().filter(r -> r.status() == ConversionStatus.EMPTY).count();
         long failed = results.stream().filter(r -> r.status() == ConversionStatus.FAILED).count();
-        return new ConversionSummary(files, results.size(), converted, empty, failed, references, resolved);
+        long convertedGroovy = groovyResults.stream()
+                .filter(r -> r.status() == ConversionStatus.CONVERTED).count();
+        long reviewGroovy = groovyResults.stream()
+                .filter(r -> r.status() == ConversionStatus.REVIEW).count();
+        long failedGroovy = groovyResults.stream()
+                .filter(r -> r.status() == ConversionStatus.FAILED).count();
+        return new ConversionSummary(jrxmlFiles, results.size(), converted, empty, failed,
+                references, resolved, groovyFiles, groovyResults.size(), convertedGroovy,
+                reviewGroovy, failedGroovy);
     }
 }

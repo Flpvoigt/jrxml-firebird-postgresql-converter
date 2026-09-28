@@ -39,4 +39,51 @@ class FirebirdToPostgresSqlConverterTest {
         assertEquals(ConversionStatus.EMPTY, result.status());
         assertFalse(result.succeeded());
     }
+
+    @Test
+    void convertsUpdateOrInsertWithExplicitMatchingToPostgresUpsert() {
+        var result = converter.convert(Path.of("script.groovy"), 1, """
+                UPDATE OR INSERT INTO COMISSAO (CODIGO, TIPO, VALOR)
+                VALUES (10, 'A', 5.5)
+                MATCHING (CODIGO, TIPO);
+                """);
+
+        assertEquals(ConversionStatus.CONVERTED, result.status());
+        assertTrue(result.convertedSql().contains("INSERT INTO COMISSAO"), result.convertedSql());
+        assertTrue(result.convertedSql().contains("ON CONFLICT (CODIGO, TIPO)"), result.convertedSql());
+        assertTrue(result.convertedSql().contains("VALOR = EXCLUDED.VALOR"), result.convertedSql());
+        assertFalse(result.convertedSql().contains("CODIGO = EXCLUDED.CODIGO"), result.convertedSql());
+    }
+
+    @Test
+    void refusesUpdateOrInsertWhenConflictKeyIsUnknown() {
+        var result = converter.convert(Path.of("script.groovy"), 1,
+                "UPDATE OR INSERT INTO PRODUTO (CODIGO, NOME) VALUES (1, 'Teste')");
+
+        assertEquals(ConversionStatus.FAILED, result.status());
+        assertTrue(result.message().contains("sem MATCHING"), result.message());
+    }
+
+    @Test
+    void convertsLegacyFunctionsAndPreservesTerminalSemicolon() {
+        var result = converter.convert(Path.of("script.groovy"), 1, """
+                INSERT INTO MOVIMENTO (ID, TEXTO)
+                VALUES (GEN_ID(SEQ_MOVIMENTO, 1), ASCII_CHAR(13));
+                """);
+
+        assertEquals(ConversionStatus.CONVERTED, result.status());
+        assertTrue(result.convertedSql().contains("nextval('SEQ_MOVIMENTO')"), result.convertedSql());
+        assertTrue(result.convertedSql().toLowerCase().contains("chr(13)"), result.convertedSql());
+        assertTrue(result.convertedSql().endsWith(";"), result.convertedSql());
+    }
+
+    @Test
+    void convertsFirebirdListWithDistinct() {
+        var result = converter.convert(Path.of("script.groovy"), 1,
+                "SELECT LIST(DISTINCT N.NUMERO) NOTAS FROM NOTAS N");
+
+        assertEquals(ConversionStatus.CONVERTED, result.status());
+        assertTrue(result.convertedSql().toLowerCase().contains("string_agg(distinct"),
+                result.convertedSql());
+    }
 }

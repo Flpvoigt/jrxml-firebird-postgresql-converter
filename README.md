@@ -1,17 +1,18 @@
-# JRXML Converter
+# Conversor JRXML e Groovy
 
 Ferramenta Java 21 para localizar consultas SQL em relatórios JasperReports
-(`.jrxml`) e convertê-las do dialeto Firebird para PostgreSQL usando o parser do
-jOOQ. A entrada é sempre somente leitura; os arquivos convertidos são gravados
-em outro diretório, mantendo a estrutura relativa dos relatórios e subreports.
+(`.jrxml`) e scripts (`.groovy`) e convertê-las do dialeto Firebird para
+PostgreSQL usando o parser do jOOQ. A entrada é sempre somente leitura; os
+arquivos convertidos são gravados em outro diretório.
 
 ## Estrutura
 
 ```text
-src/main/java/io/github/flpvoigt/jrxmlconverter/
+src/main/java/br/com/jjw/jrxmlconverter/
 ├── JrxmlConverterApplication.java   # entrada da aplicação e composição
 ├── cli/                             # interpretação da linha de comando
 ├── domain/                          # resultados e estados do domínio
+├── groovy/                          # localização e alteração segura de SQL em Groovy
 ├── jrxml/                           # alteração controlada do JRXML
 ├── report/                          # CSV e resumo da execução
 ├── service/                         # orquestração do processamento
@@ -48,7 +49,7 @@ java -jar target\jrxml-converter-0.2.0-SNAPSHOT.jar `
   --dry-run
 ```
 
-## Gerar relatórios convertidos
+## Gerar arquivos convertidos
 
 ```powershell
 java -jar target\jrxml-converter-0.2.0-SNAPSHOT.jar `
@@ -57,14 +58,27 @@ java -jar target\jrxml-converter-0.2.0-SNAPSHOT.jar `
 ```
 
 Nas execuções seguintes, acrescente `--overwrite`. O programa nunca altera a
-entrada. Falhas individuais preservam o SQL original, aparecem em
-`conversion-report.csv` e fazem o processo encerrar com código 3.
+entrada. A saída é organizada assim:
+
+```text
+output\postgresql\
+├── jrxml\                         # JRXML convertidos e relatório próprio
+│   └── conversion-report.csv
+├── groovy\                        # Groovy convertidos e relatório próprio
+│   └── conversion-report.csv
+└── conversion-summary.txt         # resumo geral
+```
+
+SQLs Groovy montados por concatenação ou em fragmentos são preservados sem
+alteração e recebem o estado `REVIEW` no CSV, com arquivo e linha. Falhas e
+itens para revisão fazem o processo encerrar com código 3.
 
 ## Limite da validação
 
-A conversão garante estrutura XML e tradução sintática. A validação final ainda
-deve executar as consultas com parâmetros reais no PostgreSQL de destino e
-compilar/renderizar os JRXML com a versão de Jasper utilizada no ambiente.
+A conversão garante estrutura XML/Groovy e tradução sintática dos SQLs completos
+identificados. A validação final ainda deve executar as consultas com parâmetros
+reais no PostgreSQL, compilar/renderizar os JRXML e exercitar os scripts Groovy
+no ambiente utilizado pelo cliente.
 
 ## Uso
 
