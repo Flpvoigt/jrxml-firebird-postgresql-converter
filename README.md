@@ -45,7 +45,8 @@ target\jrxml-converter-0.2.0-SNAPSHOT.jar
 
 O `--input` aceita tanto uma pasta quanto um único arquivo `.jrxml` ou `.groovy`.
 Ao receber uma pasta, a busca é recursiva e pode processar os dois tipos na mesma
-execução.
+execução. Quando a entrada é um JRXML master isolado, subreports literais locais
+(`"arquivo.jrxml"` ou `"arquivo.jasper"`) também são descobertos recursivamente.
 
 ```powershell
 java -jar target\jrxml-converter-0.2.0-SNAPSHOT.jar `
@@ -68,7 +69,7 @@ entrada. A saída é organizada assim:
 output\postgresql\
 ├── jrxml\                         # JRXML convertidos e relatório próprio
 │   └── conversion-report.csv
-├── groovy\                        # todos os Groovy reunidos e relatório próprio
+├── groovy\                        # Groovy com estrutura relativa e relatório próprio
 │   └── conversion-report.csv
 └── conversion-summary.txt         # resumo geral
 ```
@@ -89,28 +90,29 @@ escapado novamente como XML depois da conversão.
 Para SQLs Groovy com trechos dinâmicos, o conversor possui uma etapa conservadora
 de contingência. Ela altera somente construções Firebird determinísticas, como
 `FIRST/SKIP`, `DATEADD`, `DATEDIFF`, `LIST`, `GEN_ID`, `ASCII_CHAR`,
-`RDB$DATABASE`, `STARTING WITH` e `WITH LOCK`, mantendo as interpolações Groovy.
+`RDB$DATABASE`, `STARTING WITH`, `CONTAINING` e `WITH LOCK`, mantendo as
+interpolações Groovy.
 Se não for possível provar que a alteração é segura, o conteúdo original é
 preservado e recebe `REVIEW`.
 
-Os Groovy encontrados em qualquer subpasta são reunidos diretamente na pasta
-`groovy`. Se existirem dois arquivos com o mesmo nome, a execução é interrompida
-para evitar sobrescrita incorreta. Com `--overwrite`, a saída Groovy anterior é
-limpa antes da nova geração. Os JRXML mantêm seus caminhos relativos para não
-quebrar relações entre relatórios master e subreports.
+Os Groovy e JRXML preservam seus caminhos relativos, evitando colisões entre
+arquivos homônimos e mantendo as relações entre relatórios master e subreports.
+Com `--overwrite`, as árvores `groovy` e `jrxml` dos projetos processados são
+limpas antes da nova geração, impedindo que arquivos antigos permaneçam na saída.
 
-Quando a entrada contém vários projetos, como `C:\Projetos\besser-complements`,
-o conversor ativa automaticamente o modo agrupado. Cada primeira subpasta ganha
-uma saída própria. Os Groovy são separados pela categoria de origem (`endpoints`,
-`lucene`, `reports`, `charts` etc.), evitando conflito entre arquivos homônimos:
+Quando a entrada contém vários projetos, o conversor identifica raízes por
+marcadores comuns (`pom.xml`, Gradle, `.git` ou `src/main`) e ativa
+automaticamente o modo agrupado. Cada primeira subpasta ganha uma saída própria.
+Dentro de cada tipo, o caminho abaixo de `resources` é preservado, evitando
+conflito entre arquivos homônimos:
 
 ```text
 output\conversao-geral\
 ├── besser-complements-102\
-│   ├── groovy\endpoints\
+│   ├── groovy\besser-core\endpoints\tray\
 │   └── jrxml\besser-core\reports\
 └── besser-complements-1068\
-    ├── groovy\endpoints\
+    ├── groovy\besser-core\endpoints\
     └── jrxml\besser-core\reports\
 ```
 
@@ -123,6 +125,12 @@ A conversão garante estrutura XML/Groovy e tradução sintática dos SQLs compl
 identificados. A validação final ainda deve executar as consultas com parâmetros
 reais no PostgreSQL, compilar/renderizar os JRXML e exercitar os scripts Groovy
 no ambiente utilizado pelo cliente.
+
+Depois da renderização, o conversor procura construções Firebird conhecidas que
+tenham permanecido fora de textos e comentários. Nesses casos o resultado é
+`FAILED` e o SQL original é mantido. Paginação `FIRST/SKIP` combinada com
+`UNION`, `INTERSECT` ou `EXCEPT` também exige revisão, pois o limite pode
+pertencer a um ramo específico da operação.
 
 `UPDATE OR INSERT` sem `MATCHING` permanece para revisão: no Firebird a chave
 pode ser obtida da chave primária da tabela, enquanto o PostgreSQL exige um alvo

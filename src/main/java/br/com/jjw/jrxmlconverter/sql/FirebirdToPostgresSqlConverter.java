@@ -52,10 +52,20 @@ public final class FirebirdToPostgresSqlConverter {
     private static final Pattern COMMA_TABLE_FUNCTION_START = Pattern.compile(
             "(?i),\\s*([A-Z_][A-Z0-9_$]*(?:\\s*\\.\\s*[A-Z_][A-Z0-9_$]*)?)\\s*\\(");
     private static final Pattern WITH_LOCK = Pattern.compile("(?is)\\s+WITH\\s+LOCK\\s*$");
+    private static final Pattern STARTING_WITH = Pattern.compile(
+            "(?is)([A-Z_][A-Z0-9_$.]*)\\s+(NOT\\s+)?STARTING\\s+WITH\\s+"
+                    + "(CAST\\s*\\((?:[^()]|\\([^()]*\\))*\\)|__[A-Z]+_TOKEN_\\d+__|"
+                    + "'(?:''|[^'])*'|[A-Z_][A-Z0-9_$.]*)");
+    private static final Pattern CONTAINING = Pattern.compile(
+            "(?is)([A-Z_][A-Z0-9_$.]*)\\s+(NOT\\s+)?CONTAINING\\s+"
+                    + "(CAST\\s*\\((?:[^()]|\\([^()]*\\))*\\)|__[A-Z]+_TOKEN_\\d+__|"
+                    + "'(?:''|[^'])*'|[A-Z_][A-Z0-9_$.]*)");
     private static final Pattern REMAINING_FIREBIRD_SYNTAX = Pattern.compile(
-            "(?is)\\b(?:FIRST|SKIP|DATEADD|DATEDIFF|GEN_ID|ASCII_CHAR|IIF|CONTAINING)\\b"
-                    + "|\\bSTARTING\\s+WITH\\b|\\bUPDATE\\s+OR\\s+INSERT\\b"
-                    + "|\\bEXECUTE\\s+BLOCK\\b|RDB\\$DATABASE|\\bLIST\\s*\\(");
+            "(?is)\\bSELECT\\s+(?:DISTINCT\\s+)?FIRST\\b|\\bSKIP\\b(?!\\s+LOCKED)"
+                    + "|\\b(?:DATEADD|DATEDIFF|GEN_ID|ASCII_CHAR|IIF)\\s*\\("
+                    + "|\\b(?:STARTING\\s+WITH|CONTAINING)\\b|\\bUPDATE\\s+OR\\s+INSERT\\b"
+                    + "|\\bEXECUTE\\s+BLOCK\\b|RDB\\$DATABASE|\\bLIST\\s*\\("
+                    + "|\\bWITH\\s+LOCK\\b");
 
     private final DSLContext postgres;
     private final FirebirdUpsertConverter upsertConverter = new FirebirdUpsertConverter();
@@ -78,6 +88,10 @@ public final class FirebirdToPostgresSqlConverter {
                 ? TRAILING_SEMICOLON.matcher(originalSql).replaceFirst("") : originalSql;
         ProtectedSql protectedSql = protect(sqlToConvert);
         try {
+            if (protectedSql.ambiguousSetPagination()) {
+                return QueryResult.failed(file, queryIndex, originalSql,
+                        "FIRST/SKIP combinado com UNION, INTERSECT ou EXCEPT exige revisão de escopo.");
+            }
             if (startsWithUpdateOrInsert(protectedSql.sql())) {
                 Optional<String> upsert = upsertConverter.convert(protectedSql.sql());
                 if (upsert.isEmpty()) {
@@ -87,6 +101,10 @@ public final class FirebirdToPostgresSqlConverter {
                 String converted = restore(upsert.get(), protectedSql.tableFunctions());
                 converted = restore(converted, protectedSql.jasperExpressions());
                 converted = restore(converted, protectedSql.postgresExpressions());
+                if (hasRemainingFirebirdSyntax(converted)) {
+                    return QueryResult.failed(file, queryIndex, originalSql,
+                            "A consulta convertida ainda contém sintaxe específica do Firebird.");
+                }
                 if (terminated) {
                     converted += ";";
                 }
@@ -97,9 +115,16 @@ public final class FirebirdToPostgresSqlConverter {
             String converted = postgres.renderInlined(parsed);
             converted = restore(converted, protectedSql.tableFunctions());
             converted = appendPagination(converted, protectedSql.first(), protectedSql.skip());
+            if (protectedSql.withLock()) {
+                converted += "\nfor update";
+            }
             converted = restore(converted, protectedSql.jasperExpressions());
             converted = restore(converted, protectedSql.postgresExpressions());
-            converted = rewriteFirebirdList(converted);
+            converted = rewriteFirebirdListSafely(converted);
+            if (hasRemainingFirebirdSyntax(converted)) {
+                return QueryResult.failed(file, queryIndex, originalSql,
+                        "A consulta convertida ainda contém sintaxe específica do Firebird.");
+            }
             if (terminated) {
                 converted += ";";
             }
@@ -118,20 +143,24 @@ public final class FirebirdToPostgresSqlConverter {
         String converted = terminated
                 ? TRAILING_SEMICOLON.matcher(originalSql).replaceFirst("") : originalSql;
         String before = converted;
-        converted = rewriteLegacyFunctions(rewriteFirebirdList(converted));
+        TokenizedSql textRegions = protectTextRegions(converted);
+        converted = rewriteLegacyFunctions(rewriteFirebirdList(textRegions.sql()));
         converted = converted.replaceAll("(?i)\\s+FROM\\s+RDB\\$DATABASE\\b", "");
-        converted = WITH_LOCK.matcher(converted).replaceFirst(" FOR UPDATE");
+        boolean withLock = WITH_LOCK.matcher(converted).find();
+        converted = WITH_LOCK.matcher(converted).replaceFirst("");
         converted = rewriteDateAdds(converted);
         converted = rewriteDateDiffs(converted);
-        converted = converted.replaceAll(
-                "(?is)([A-Z_][A-Z0-9_$.]*)\\s+STARTING\\s+WITH\\s+"
-                        + "(CAST\\s*\\((?:[^()]|\\([^()]*\\))*\\)|[A-Z_][A-Z0-9_$.]*)",
-                "$1 LIKE ($2 || '%')");
+        converted = rewriteStartingWith(converted);
+        converted = rewriteContaining(converted);
         PaginationSql pagination = protectTopLevelPagination(converted);
         converted = rewriteNestedPaginationDirect(pagination.sql());
         converted = appendPagination(converted, pagination.first(), pagination.skip());
+        if (withLock) {
+            converted += " FOR UPDATE";
+        }
+        converted = restore(converted, textRegions.tokens());
 
-        if (converted.equals(before) || REMAINING_FIREBIRD_SYNTAX.matcher(converted).find()) {
+        if (converted.equals(before) || hasRemainingFirebirdSyntax(converted)) {
             return QueryResult.failed(file, queryIndex, originalSql,
                     "O SQL dinâmico ainda contém estrutura que exige análise completa.");
         }
@@ -146,16 +175,14 @@ public final class FirebirdToPostgresSqlConverter {
     }
 
     private ProtectedSql protect(String sql) {
-        String compatibleSql = rewriteLegacyFunctions(rewriteFirebirdList(sql));
+        TokenizedSql textRegions = protectTextRegions(sql);
+        String compatibleSql = rewriteLegacyFunctions(rewriteFirebirdList(textRegions.sql()));
         compatibleSql = compatibleSql.replaceAll("(?i)\\s+FROM\\s+RDB\\$DATABASE\\b", "");
-        compatibleSql = WITH_LOCK.matcher(compatibleSql).replaceFirst(" FOR UPDATE");
+        boolean withLock = WITH_LOCK.matcher(compatibleSql).find();
+        compatibleSql = WITH_LOCK.matcher(compatibleSql).replaceFirst("");
         TokenizedSql postgresExpressions = protectLastDayOfMonth(compatibleSql);
         compatibleSql = rewriteDateAdds(postgresExpressions.sql());
         compatibleSql = rewriteDateDiffs(compatibleSql);
-        compatibleSql = compatibleSql.replaceAll(
-                "(?is)([A-Z_][A-Z0-9_$.]*)\\s+STARTING\\s+WITH\\s+"
-                        + "(CAST\\s*\\((?:[^()]|\\([^()]*\\))*\\)|[A-Z_][A-Z0-9_$.]*)",
-                "$1 LIKE ($2 || '%')");
         Matcher matcher = JASPER_EXPRESSION.matcher(compatibleSql);
         StringBuilder text = new StringBuilder(sql.length());
         Map<String, String> jasperExpressions = new LinkedHashMap<>();
@@ -166,13 +193,46 @@ public final class FirebirdToPostgresSqlConverter {
             matcher.appendReplacement(text, Matcher.quoteReplacement(" " + token + " "));
         }
         matcher.appendTail(text);
+        String tokenizedSql = rewriteContaining(rewriteStartingWith(text.toString()));
+        tokenizedSql = restore(tokenizedSql, textRegions.tokens());
 
-        PaginationSql pagination = protectTopLevelPagination(text.toString());
-        pagination = new PaginationSql(rewriteNestedPagination(pagination.sql()),
+        PaginationSql pagination = protectTopLevelPagination(tokenizedSql);
+        boolean ambiguousSetPagination = (pagination.first() != null || pagination.skip() != null)
+                && hasTopLevelSetOperator(tokenizedSql);
+        pagination = new PaginationSql(rewriteNestedPaginationDirect(pagination.sql()),
                 pagination.first(), pagination.skip());
         TokenizedSql tableFunctions = protectTableFunctions(pagination.sql());
         return new ProtectedSql(tableFunctions.sql(), jasperExpressions,
-                tableFunctions.tokens(), postgresExpressions.tokens(), pagination.first(), pagination.skip());
+                tableFunctions.tokens(), postgresExpressions.tokens(), pagination.first(), pagination.skip(),
+                withLock, ambiguousSetPagination);
+    }
+
+    private static String rewriteStartingWith(String sql) {
+        Matcher matcher = STARTING_WITH.matcher(sql);
+        StringBuilder rewritten = new StringBuilder(sql.length());
+        while (matcher.find()) {
+            String left = matcher.group(1);
+            String right = matcher.group(3);
+            String comparison = "POSITION(CAST(" + right + " AS VARCHAR) IN CAST(" + left
+                    + " AS VARCHAR)) " + (matcher.group(2) == null ? "= 1" : "<> 1");
+            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(comparison));
+        }
+        matcher.appendTail(rewritten);
+        return rewritten.toString();
+    }
+
+    private static String rewriteContaining(String sql) {
+        Matcher matcher = CONTAINING.matcher(sql);
+        StringBuilder rewritten = new StringBuilder(sql.length());
+        while (matcher.find()) {
+            String left = matcher.group(1);
+            String right = matcher.group(3);
+            String comparison = "POSITION(LOWER(CAST(" + right + " AS VARCHAR)) IN LOWER(CAST("
+                    + left + " AS VARCHAR))) " + (matcher.group(2) == null ? "> 0" : "= 0");
+            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(comparison));
+        }
+        matcher.appendTail(rewritten);
+        return rewritten.toString();
     }
 
     private static PaginationSql protectTopLevelPagination(String sql) {
@@ -208,32 +268,6 @@ public final class FirebirdToPostgresSqlConverter {
             paginated.append("\nfetch next ").append(first).append(" rows only");
         }
         return paginated.toString();
-    }
-
-    private static String rewriteNestedPagination(String sql) {
-        String rewritten = sql;
-        boolean changed;
-        do {
-            changed = false;
-            NestedPagination match = lastNestedPagination(rewritten);
-            if (match != null) {
-                int closing = findClosingParenthesis(rewritten, match.opening());
-                if (closing > match.contentStart()) {
-                    String body = rewritten.substring(match.contentStart(), closing).stripTrailing();
-                    String rows;
-                    if (match.skip() == 0) {
-                        rows = " ROWS " + match.first();
-                    } else {
-                        rows = " ROWS " + (match.skip() + 1) + " TO "
-                                + (match.skip() + match.first());
-                    }
-                    rewritten = rewritten.substring(0, match.opening()) + "(SELECT " + body + rows
-                            + rewritten.substring(closing);
-                    changed = true;
-                }
-            }
-        } while (changed);
-        return rewritten;
     }
 
     private static String rewriteNestedPaginationDirect(String sql) {
@@ -598,6 +632,11 @@ public final class FirebirdToPostgresSqlConverter {
                 "string_agg(cast($1 as varchar), ',')");
     }
 
+    private static String rewriteFirebirdListSafely(String sql) {
+        TokenizedSql textRegions = protectTextRegions(sql);
+        return restore(rewriteFirebirdList(textRegions.sql()), textRegions.tokens());
+    }
+
     private static String rewriteLegacyFunctions(String sql) {
         Matcher one = GEN_ID_ONE.matcher(sql);
         String rewritten = one.replaceAll(match -> "nextval('" + match.group(1) + "')");
@@ -634,6 +673,111 @@ public final class FirebirdToPostgresSqlConverter {
         return -1;
     }
 
+    private static TokenizedSql protectTextRegions(String sql) {
+        StringBuilder protectedSql = new StringBuilder(sql.length());
+        Map<String, String> tokens = new LinkedHashMap<>();
+        int index = 0;
+        int sequence = 0;
+        while (index < sql.length()) {
+            char current = sql.charAt(index);
+            if (current == '\'' || current == '"') {
+                char quote = current;
+                int contentStart = index + 1;
+                int cursor = contentStart;
+                while (cursor < sql.length()) {
+                    if (sql.charAt(cursor) == quote) {
+                        if (cursor + 1 < sql.length() && sql.charAt(cursor + 1) == quote) {
+                            cursor += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    cursor++;
+                }
+                if (cursor >= sql.length()) {
+                    protectedSql.append(sql, index, sql.length());
+                    break;
+                }
+                String token = "__sql_text_token_" + (++sequence) + "__";
+                tokens.put(token, sql.substring(contentStart, cursor));
+                protectedSql.append(quote).append(token).append(quote);
+                index = cursor + 1;
+                continue;
+            }
+            if (sql.startsWith("--", index)) {
+                int end = sql.indexOf('\n', index + 2);
+                if (end < 0) {
+                    end = sql.length();
+                }
+                String token = "__sql_text_token_" + (++sequence) + "__";
+                tokens.put(token, sql.substring(index + 2, end));
+                protectedSql.append("--").append(token);
+                if (end < sql.length()) {
+                    protectedSql.append('\n');
+                    end++;
+                }
+                index = end;
+                continue;
+            }
+            if (sql.startsWith("/*", index)) {
+                int closing = sql.indexOf("*/", index + 2);
+                if (closing < 0) {
+                    protectedSql.append(sql, index, sql.length());
+                    break;
+                }
+                String token = "__sql_text_token_" + (++sequence) + "__";
+                tokens.put(token, sql.substring(index + 2, closing));
+                protectedSql.append("/*").append(token).append("*/");
+                index = closing + 2;
+                continue;
+            }
+            protectedSql.append(current);
+            index++;
+        }
+        return new TokenizedSql(protectedSql.toString(), tokens);
+    }
+
+    private static boolean hasRemainingFirebirdSyntax(String sql) {
+        String protectedSql = protectTextRegions(sql).sql();
+        return REMAINING_FIREBIRD_SYNTAX.matcher(protectedSql).find();
+    }
+
+    private static boolean hasTopLevelSetOperator(String sql) {
+        int depth = 0;
+        boolean inString = false;
+        for (int index = 0; index < sql.length();) {
+            char current = sql.charAt(index);
+            if (current == '\'' && inString && index + 1 < sql.length()
+                    && sql.charAt(index + 1) == '\'') {
+                index += 2;
+                continue;
+            }
+            if (current == '\'') {
+                inString = !inString;
+                index++;
+                continue;
+            }
+            if (!inString && current == '(') {
+                depth++;
+            } else if (!inString && current == ')') {
+                depth--;
+            } else if (!inString && depth == 0 && Character.isLetter(current)) {
+                int end = index + 1;
+                while (end < sql.length() && Character.isLetter(sql.charAt(end))) {
+                    end++;
+                }
+                String word = sql.substring(index, end).toUpperCase(Locale.ROOT);
+                if (word.equals("UNION") || word.equals("INTERSECT") || word.equals("EXCEPT")) {
+                    return true;
+                }
+                index = end;
+                continue;
+            }
+            index++;
+        }
+        return false;
+    }
+
     private static String restore(String sql, Map<String, String> tokens) {
         String restored = sql;
         for (Map.Entry<String, String> token : tokens.entrySet()) {
@@ -655,7 +799,8 @@ public final class FirebirdToPostgresSqlConverter {
     private record ProtectedSql(String sql, Map<String, String> jasperExpressions,
                                 Map<String, String> tableFunctions,
                                 Map<String, String> postgresExpressions,
-                                String first, String skip) {
+                                String first, String skip, boolean withLock,
+                                boolean ambiguousSetPagination) {
     }
 
     private record TokenizedSql(String sql, Map<String, String> tokens) {

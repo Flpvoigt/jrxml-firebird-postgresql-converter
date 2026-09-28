@@ -99,6 +99,17 @@ class FirebirdToPostgresSqlConverterTest {
     }
 
     @Test
+    void preservesExactFirstAndSkipAmountsInsideNestedSelect() {
+        var result = converter.convert(Path.of("report.jrxml"), 1,
+                "select (select first 10 skip 5 i.id from itens i order by i.id) id from produtos p");
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        assertTrue(result.convertedSql().toLowerCase().contains("offset 5 rows"), result.convertedSql());
+        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+                result.convertedSql());
+    }
+
+    @Test
     void convertsFirebirdDateAddSyntax() {
         var result = converter.convert(Path.of("script.groovy"), 1,
                 "UPDATE PARAMETROS SET ULTIMA_SINC = DATEADD(-1 HOUR TO CURRENT_TIMESTAMP)");
@@ -131,7 +142,7 @@ class FirebirdToPostgresSqlConverterTest {
         assertEquals(ConversionStatus.CONVERTED, datediff.status(), datediff.message());
         assertFalse(datediff.convertedSql().toLowerCase().contains("datediff"), datediff.convertedSql());
         assertEquals(ConversionStatus.CONVERTED, starting.status(), starting.message());
-        assertTrue(starting.convertedSql().toLowerCase().contains("like"), starting.convertedSql());
+        assertTrue(starting.convertedSql().toLowerCase().contains("position"), starting.convertedSql());
     }
 
     @Test
@@ -165,5 +176,77 @@ class FirebirdToPostgresSqlConverterTest {
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
         assertTrue(result.convertedSql().toLowerCase().contains("string_agg"), result.convertedSql());
+    }
+
+    @Test
+    void refusesConvertedSqlWhenKnownFirebirdSyntaxRemains() {
+        var generator = converter.convert(Path.of("script.groovy"), 1,
+                "SELECT GEN_ID(MINHA_SEQ, 2) FROM RDB$DATABASE");
+        var nestedList = converter.convert(Path.of("report.jrxml"), 1, """
+                SELECT (SELECT LIST(COALESCE(X.NOME, X.APELIDO))
+                        FROM CLIENTES X) NOMES
+                FROM PEDIDOS P
+                """);
+
+        assertEquals(ConversionStatus.FAILED, generator.status());
+        assertTrue(generator.message().contains("sintaxe específica"), generator.message());
+        assertEquals(ConversionStatus.FAILED, nestedList.status());
+        assertTrue(nestedList.message().contains("sintaxe específica"), nestedList.message());
+    }
+
+    @Test
+    void doesNotRewriteFirebirdWordsInsideTextLiterals() {
+        var result = converter.convert(Path.of("report.jrxml"), 1,
+                "SELECT 'ASCII_CHAR(65) LIST(COL) FROM RDB$DATABASE' TEXTO FROM RDB$DATABASE");
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        assertTrue(result.convertedSql().contains("'ASCII_CHAR(65) LIST(COL) FROM RDB$DATABASE'"),
+                result.convertedSql());
+    }
+
+    @Test
+    void refusesFirebirdSqlHiddenInsideJasperXExpression() {
+        var result = converter.convert(Path.of("report.jrxml"), 1, """
+                SELECT P.ID
+                FROM PEDIDOS P
+                WHERE $X{[BETWEEN],(SELECT FIRST 1 I.DATA FROM ITENS I), inicio, fim}
+                """);
+
+        assertEquals(ConversionStatus.FAILED, result.status());
+        assertTrue(result.message().contains("sintaxe específica"), result.message());
+    }
+
+    @Test
+    void placesPaginationBeforePostgresLockClause() {
+        var result = converter.convert(Path.of("report.jrxml"), 1,
+                "SELECT FIRST 10 ID FROM PEDIDOS WITH LOCK");
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        String converted = result.convertedSql().toLowerCase();
+        assertTrue(converted.indexOf("fetch next 10 rows only") < converted.indexOf("for update"),
+                result.convertedSql());
+    }
+
+    @Test
+    void refusesAmbiguousFirstScopeWithSetOperation() {
+        var result = converter.convert(Path.of("report.jrxml"), 1,
+                "SELECT FIRST 10 ID FROM PEDIDOS UNION ALL SELECT ID FROM HISTORICO");
+
+        assertEquals(ConversionStatus.FAILED, result.status());
+        assertTrue(result.message().contains("revisão de escopo"), result.message());
+    }
+
+    @Test
+    void convertsContainingAndStartingWithWithoutLikeWildcards() {
+        var containing = converter.convert(Path.of("report.jrxml"), 1,
+                "SELECT ID FROM PRODUTOS WHERE NOME CONTAINING 'A_%'");
+        var starting = converter.convert(Path.of("report.jrxml"), 1,
+                "SELECT ID FROM PRODUTOS WHERE NOME STARTING WITH $P{prefixo}");
+
+        assertEquals(ConversionStatus.CONVERTED, containing.status(), containing.message());
+        assertTrue(containing.convertedSql().toLowerCase().contains("position"), containing.convertedSql());
+        assertEquals(ConversionStatus.CONVERTED, starting.status(), starting.message());
+        assertTrue(starting.convertedSql().contains("$P{prefixo}"), starting.convertedSql());
+        assertFalse(starting.convertedSql().toLowerCase().contains(" like "), starting.convertedSql());
     }
 }
