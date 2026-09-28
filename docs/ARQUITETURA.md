@@ -28,10 +28,12 @@ somente leitura e cada tipo de arquivo é gravado em uma saída separada.
 - Isolar falhas por arquivo para que um arquivo defeituoso não interrompa o lote.
 - Ignorar explicitamente linguagens Jasper que não sejam SQL, como JSON e XPath.
 - Não converter isoladamente fragmentos ou SQLs montados por concatenação.
-- Reunir scripts Groovy em uma única pasta e rejeitar nomes duplicados.
-- Preservar a estrutura relativa dos JRXML por causa dos subreports.
-- No modo multiprojeto, separar a saída pela primeira pasta da entrada e agrupar
-  Groovy pela categoria localizada abaixo de `resources`.
+- Preservar a estrutura relativa de Groovy e JRXML, inclusive para arquivos com
+  nomes iguais em diretórios diferentes.
+- Ao receber um master isolado, seguir subreports literais locais sem sair da
+  pasta permitida pela entrada.
+- No modo multiprojeto, separar a saída pela primeira pasta da entrada.
+- Limpar as árvores JRXML e Groovy processadas quando `--overwrite` for usado.
 - Ignorar diretórios gerados e metadados de ferramentas durante a descoberta.
 - Registrar arquivo e linha dos scripts que exigem revisão manual.
 - Retornar código de saída 3 quando existir falha ou revisão pendente.
@@ -39,8 +41,9 @@ somente leitura e cada tipo de arquivo é gravado em uma saída separada.
 ## Estratégias de conversão
 
 A estratégia principal usa o parser do jOOQ com entrada Firebird e renderização
-PostgreSQL. Antes do parser, parâmetros Jasper e interpolações Groovy recebem
-tokens temporários; depois da conversão, os conteúdos originais são restaurados.
+PostgreSQL. Antes das transformações, textos, comentários, parâmetros Jasper e
+interpolações Groovy recebem tokens temporários; depois da conversão, os
+conteúdos originais são restaurados.
 
 Uma segunda estratégia, usada somente quando um SQL Groovy dinâmico não pode ser
 analisado integralmente, aplica transformações determinísticas sem reorganizar a
@@ -49,8 +52,10 @@ Firebird conhecidas e não encontra outra construção incompatível restante.
 
 As regras adicionais cobrem paginação no nível principal e em subconsultas,
 funções selecionáveis no `FROM`, `DATEADD`, `DATEDIFF`, `LIST`, `GEN_ID`,
-`ASCII_CHAR`, `STARTING WITH`, `WITH LOCK`, `RDB$DATABASE` e o upsert com
-`MATCHING` explícito.
+`ASCII_CHAR`, `STARTING WITH`, `CONTAINING`, `WITH LOCK`, `RDB$DATABASE` e o
+upsert com `MATCHING` explícito. Uma validação posterior impede o estado
+`CONVERTED` quando ainda existir sintaxe Firebird conhecida fora de textos e
+comentários.
 
 ## Limites atuais
 
@@ -62,3 +67,9 @@ Upserts sem `MATCHING` precisam de metadados de chave primária ou única. Fluxo
 Groovy que constroem um SQL por concatenação ou em várias atribuições exigem uma
 etapa futura de análise de fluxo do código; converter cada literal isoladamente
 poderia mudar a posição de cláusulas e gerar SQL inválido.
+
+`FIRST/SKIP` em ramos de `UNION`, `INTERSECT` ou `EXCEPT` permanece para revisão
+até que a árvore da operação de conjunto seja transformada sem alterar o escopo
+do limite. Expressões Jasper `$X{...}` que contenham SQL Firebird interno também
+são recusadas quando a construção incompatível não puder ser convertida com
+segurança.

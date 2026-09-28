@@ -38,6 +38,8 @@ class ConversionServiceTest {
                 """);
         Path staleDirectory = Files.createDirectories(output.resolve("groovy/tray"));
         Files.writeString(staleDirectory.resolve("arquivo-antigo.groovy"), "conteúdo antigo");
+        Path staleJrxmlDirectory = Files.createDirectories(output.resolve("jrxml/antigos"));
+        Files.writeString(staleJrxmlDirectory.resolve("removido.jrxml"), "conteúdo antigo");
 
         var sqlConverter = new FirebirdToPostgresSqlConverter();
         var service = new ConversionService(new SecureXmlParser(), new SubreportInspector(),
@@ -50,9 +52,9 @@ class ConversionServiceTest {
         assertEquals(1, run.summary().jrxmlFiles());
         assertEquals(1, run.summary().groovyFiles());
         assertTrue(Files.exists(output.resolve("jrxml/relatorio.jrxml")));
-        assertTrue(Files.exists(output.resolve("groovy/rotina.groovy")));
-        assertTrue(Files.notExists(output.resolve("groovy/endpoints")));
+        assertTrue(Files.exists(output.resolve("groovy/endpoints/tray/rotina.groovy")));
         assertTrue(Files.notExists(output.resolve("groovy/tray")));
+        assertTrue(Files.notExists(output.resolve("jrxml/antigos")));
         assertTrue(Files.exists(output.resolve("jrxml/conversion-report.csv")));
         assertTrue(Files.exists(output.resolve("groovy/conversion-report.csv")));
         assertTrue(Files.notExists(output.resolve("relatorio.jrxml")));
@@ -84,7 +86,7 @@ class ConversionServiceTest {
     }
 
     @Test
-    void refusesDuplicateGroovyNamesWhenFlatteningOutput() throws Exception {
+    void preservesDirectoriesWhenGroovyFilesHaveTheSameName() throws Exception {
         Path input = Files.createDirectory(temporaryDirectory.resolve("duplicate-input"));
         Files.createDirectories(input.resolve("a"));
         Files.createDirectories(input.resolve("b"));
@@ -97,23 +99,26 @@ class ConversionServiceTest {
         var options = new CommandLineOptions(input, temporaryDirectory.resolve("duplicate-output"),
                 false, false, false);
 
-        var exception = assertThrows(IllegalArgumentException.class, () -> service.execute(options));
-        assertTrue(exception.getMessage().contains("mesmo nome"), exception.getMessage());
+        var run = service.execute(options);
+
+        assertEquals(2, run.summary().groovyFiles());
+        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/groovy/a/rotina.groovy")));
+        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/groovy/b/rotina.groovy")));
     }
 
     @Test
     void groupsMultipleComplementProjectsAndIgnoresBuildOutputs() throws Exception {
         Path input = Files.createDirectory(temporaryDirectory.resolve("complements"));
         Path project101 = Files.createDirectories(input.resolve(
-                "besser-complements-101/src/main/resources/besser-core/endpoints/tray"));
+                "projeto-101/src/main/resources/besser-core/endpoints/tray"));
         Path project102 = Files.createDirectories(input.resolve(
-                "besser-complements-102/src/main/resources/besser-core/endpoints/tray"));
+                "projeto-102/src/main/resources/besser-core/endpoints/tray"));
         Files.writeString(project101.resolve("sql-utils.groovy"),
                 "def sql = \"SELECT FIRST 1 ID FROM PRODUTOS\"");
         Files.writeString(project102.resolve("sql-utils.groovy"),
                 "def sql = \"SELECT FIRST 1 ID FROM CLIENTES\"");
         Path generated = Files.createDirectories(input.resolve(
-                "besser-complements-101/target/classes/besser-core/endpoints/tray"));
+                "projeto-101/target/classes/besser-core/endpoints/tray"));
         Files.writeString(generated.resolve("sql-utils.groovy"), "def copia = true");
         Path output = temporaryDirectory.resolve("grouped-output");
 
@@ -128,12 +133,12 @@ class ConversionServiceTest {
         assertTrue(run.groupedByProject());
         assertEquals(2, run.summary().groovyFiles());
         assertTrue(Files.exists(output.resolve(
-                "besser-complements-101/groovy/endpoints/sql-utils.groovy")));
+                "projeto-101/groovy/besser-core/endpoints/tray/sql-utils.groovy")));
         assertTrue(Files.exists(output.resolve(
-                "besser-complements-102/groovy/endpoints/sql-utils.groovy")));
+                "projeto-102/groovy/besser-core/endpoints/tray/sql-utils.groovy")));
         assertTrue(Files.exists(output.resolve(
-                "besser-complements-101/groovy/conversion-report.csv")));
-        assertTrue(Files.notExists(output.resolve("besser-complements-101/groovy/target")));
+                "projeto-101/groovy/conversion-report.csv")));
+        assertTrue(Files.notExists(output.resolve("projeto-101/groovy/target")));
     }
 
     @Test
@@ -161,6 +166,34 @@ class ConversionServiceTest {
         assertEquals(1, groovyRun.summary().groovyFiles());
         assertEquals(1, groovyRun.summary().convertedGroovySql());
         assertTrue(Files.exists(temporaryDirectory.resolve("single-groovy-output/groovy/unico.groovy")));
+    }
+
+    @Test
+    void followsLiteralSubreportsWhenMasterIsTheDirectInput() throws Exception {
+        Path reports = Files.createDirectory(temporaryDirectory.resolve("reports"));
+        Path master = reports.resolve("master.jrxml");
+        Files.writeString(master, """
+                <jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports">
+                    <queryString><![CDATA[SELECT FIRST 1 ID FROM PEDIDOS]]></queryString>
+                    <subreport><subreportExpression><![CDATA["itens.jasper"]]></subreportExpression></subreport>
+                </jasperReport>
+                """);
+        Files.writeString(reports.resolve("itens.jrxml"), """
+                <jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports">
+                    <queryString><![CDATA[SELECT FIRST 1 ID FROM ITENS]]></queryString>
+                </jasperReport>
+                """);
+        Path output = temporaryDirectory.resolve("master-output");
+        var sqlConverter = new FirebirdToPostgresSqlConverter();
+        var service = new ConversionService(new SecureXmlParser(), new SubreportInspector(),
+                new JrxmlProcessor(sqlConverter), new GroovyProcessor(sqlConverter));
+
+        var run = service.execute(new CommandLineOptions(master, output, false, false, false));
+
+        assertEquals(2, run.summary().jrxmlFiles());
+        assertEquals(2, run.summary().convertedQueries());
+        assertTrue(Files.exists(output.resolve("jrxml/master.jrxml")));
+        assertTrue(Files.exists(output.resolve("jrxml/itens.jrxml")));
     }
 
     @Test

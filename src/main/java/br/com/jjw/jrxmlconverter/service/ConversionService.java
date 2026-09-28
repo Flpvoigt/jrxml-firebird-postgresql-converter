@@ -15,12 +15,12 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Stream;
@@ -47,6 +47,10 @@ public final class ConversionService {
         Path discoveryRoot = Files.isDirectory(input) ? input : input.getParent();
 
         List<Path> jrxmlFiles = findFiles(input, ".jrxml");
+        if (Files.isRegularFile(input) && input.getFileName().toString()
+                .toLowerCase(Locale.ROOT).endsWith(".jrxml")) {
+            jrxmlFiles = findDirectJrxmlGraph(input, discoveryRoot);
+        }
         List<Path> groovyFiles = findFiles(input, ".groovy");
         if (jrxmlFiles.isEmpty() && groovyFiles.isEmpty()) {
             throw new IllegalArgumentException("Nenhum arquivo .jrxml ou .groovy encontrado em " + input);
@@ -55,9 +59,8 @@ public final class ConversionService {
         allFiles.addAll(groovyFiles);
         boolean groupedByProject = Files.isDirectory(input)
                 && shouldGroupByProject(discoveryRoot, allFiles);
-        validateUniqueGroovyNames(groovyFiles, discoveryRoot, groupedByProject);
         if (!options.dryRun() && options.overwrite()) {
-            clearGroovyOutputs(output, discoveryRoot, groovyFiles, groupedByProject);
+            clearOutputs(output, discoveryRoot, allFiles, groupedByProject);
         }
         List<QueryResult> queryResults = new ArrayList<>();
         List<GroovySqlResult> groovyResults = new ArrayList<>();
@@ -106,9 +109,7 @@ public final class ConversionService {
         for (Path source : groovyFiles) {
             Path relative = discoveryRoot.relativize(source);
             ProjectLocation location = locate(discoveryRoot, source, groupedByProject);
-            Path destination = groupedByProject
-                    ? Path.of(groovyCategory(location.relative())).resolve(relative.getFileName())
-                    : relative.getFileName();
+            Path destination = resourceRelative(location.relative());
             DecodedSource groovy;
             GroovyConversion conversion;
             try {
@@ -174,6 +175,43 @@ public final class ConversionService {
         }
     }
 
+    private List<Path> findDirectJrxmlGraph(Path master, Path allowedRoot) {
+        Set<Path> discovered = new LinkedHashSet<>();
+        ArrayDeque<Path> pending = new ArrayDeque<>();
+        pending.add(master);
+        while (!pending.isEmpty()) {
+            Path current = pending.removeFirst().toAbsolutePath().normalize();
+            if (!discovered.add(current)) {
+                continue;
+            }
+            try {
+                String xml = Files.readString(current, StandardCharsets.UTF_8);
+                Document document = xmlParser.parse(xml, current);
+                var nodes = document.getElementsByTagNameNS("*", "subreportExpression");
+                for (int index = 0; index < nodes.getLength(); index++) {
+                    String expression = nodes.item(index).getTextContent().trim();
+                    if (expression.length() < 2 || !expression.startsWith("\"")
+                            || !expression.endsWith("\"")) {
+                        continue;
+                    }
+                    String reference = expression.substring(1, expression.length() - 1);
+                    int extension = reference.lastIndexOf('.');
+                    String jrxmlReference = extension < 0
+                            ? reference + ".jrxml" : reference.substring(0, extension) + ".jrxml";
+                    Path candidate = current.getParent().resolve(jrxmlReference)
+                            .toAbsolutePath().normalize();
+                    if (candidate.startsWith(allowedRoot) && Files.isRegularFile(candidate)
+                            && !discovered.contains(candidate)) {
+                        pending.addLast(candidate);
+                    }
+                }
+            } catch (Exception ignored) {
+                // O processamento principal registrará a falha e manterá o arquivo original.
+            }
+        }
+        return discovered.stream().sorted(Comparator.naturalOrder()).toList();
+    }
+
     private static boolean isIgnoredPath(Path input, Path path) {
         Path relative = input.relativize(path);
         for (Path component : relative) {
@@ -194,41 +232,34 @@ public final class ConversionService {
                 firstDirectories.add(relative.getName(0).toString());
             }
         }
-        long complementDirectories = firstDirectories.stream()
-                .filter(name -> name.toLowerCase(Locale.ROOT).contains("complements"))
+        long projectDirectories = firstDirectories.stream()
+                .map(input::resolve)
+                .filter(ConversionService::looksLikeProjectRoot)
                 .count();
-        return complementDirectories > 1;
+        return projectDirectories > 1;
     }
 
-    private static void validateUniqueGroovyNames(List<Path> files, Path input,
-                                                   boolean groupedByProject) {
-        Map<String, Path> names = new HashMap<>();
-        for (Path file : files) {
-            ProjectLocation location = locate(input, file, groupedByProject);
-            String key = (groupedByProject
-                    ? location.project() + "/" + groovyCategory(location.relative()) + "/"
-                    : "") + file.getFileName().toString();
-            key = key.toLowerCase(Locale.ROOT);
-            Path previous = names.putIfAbsent(key, file);
-            if (previous != null) {
-                throw new IllegalArgumentException("Dois arquivos Groovy possuem o mesmo nome e não podem "
-                        + "ser reunidos na mesma saída: " + input.relativize(previous) + " e "
-                        + input.relativize(file));
-            }
-        }
+    private static boolean looksLikeProjectRoot(Path directory) {
+        return Files.isRegularFile(directory.resolve("pom.xml"))
+                || Files.isRegularFile(directory.resolve("build.gradle"))
+                || Files.isRegularFile(directory.resolve("build.gradle.kts"))
+                || Files.isDirectory(directory.resolve(".git"))
+                || Files.isDirectory(directory.resolve("src/main"));
     }
 
-    private static void clearGroovyOutputs(Path output, Path input, List<Path> groovyFiles,
-                                           boolean groupedByProject) throws Exception {
+    private static void clearOutputs(Path output, Path input, List<Path> files,
+                                     boolean groupedByProject) throws Exception {
         if (!groupedByProject) {
+            clearDirectory(output.resolve("jrxml"));
             clearDirectory(output.resolve("groovy"));
             return;
         }
         Set<String> projects = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (Path file : groovyFiles) {
+        for (Path file : files) {
             projects.add(locate(input, file, true).project());
         }
         for (String project : projects) {
+            clearDirectory(output.resolve(project).resolve("jrxml"));
             clearDirectory(output.resolve(project).resolve("groovy"));
         }
     }
@@ -257,17 +288,6 @@ public final class ConversionService {
             }
         }
         return relative;
-    }
-
-    private static String groovyCategory(Path relative) {
-        for (int index = 0; index < relative.getNameCount(); index++) {
-            if (relative.getName(index).toString().equalsIgnoreCase("resources")
-                    && index + 2 < relative.getNameCount()) {
-                return relative.getName(index + 2).toString();
-            }
-        }
-        Path parent = relative.getParent();
-        return parent == null ? "outros" : parent.getFileName().toString();
     }
 
     private static void clearDirectory(Path directory) throws Exception {
