@@ -40,8 +40,12 @@ public final class JrxmlConverterApplication {
 
             if (!options.dryRun()) {
                 new ConversionReportWriter().write(output, run);
-                System.out.println("Relatório JRXML: " + output.resolve("jrxml/conversion-report.csv"));
-                System.out.println("Relatório Groovy: " + output.resolve("groovy/conversion-report.csv"));
+                if (run.groupedByProject()) {
+                    System.out.println("Relatórios separados por projeto em: " + output);
+                } else {
+                    System.out.println("Relatório JRXML: " + output.resolve("jrxml/conversion-report.csv"));
+                    System.out.println("Relatório Groovy: " + output.resolve("groovy/conversion-report.csv"));
+                }
             }
             return run.summary().hasProblems() ? 3 : 0;
         } catch (IllegalArgumentException exception) {
@@ -74,6 +78,7 @@ public final class JrxmlConverterApplication {
         System.out.println((options.dryRun() ? "Consultas JRXML validadas: " : "Consultas JRXML convertidas: ")
                 + summary.convertedQueries());
         System.out.println("Consultas JRXML vazias: " + summary.emptyQueries());
+        System.out.println("Consultas JRXML não SQL ignoradas: " + summary.ignoredQueries());
         System.out.println("Falhas em JRXML: " + summary.failedQueries());
         System.out.println("Subreports resolvidos: " + summary.resolvedSubreports()
                 + "/" + summary.subreportReferences());
@@ -94,7 +99,7 @@ public final class JrxmlConverterApplication {
                     --input <diretorio-origem> --dry-run
 
                 Opções:
-                  --input       Raiz pesquisada recursivamente por arquivos .jrxml e .groovy.
+                  --input       Arquivo .jrxml/.groovy ou pasta pesquisada recursivamente.
                   --output      Raiz das saídas separadas nas pastas jrxml e groovy.
                   --overwrite   Permite substituir arquivos existentes somente na saída.
                   --dry-run     Analisa e converte em memória, sem escrever arquivos.

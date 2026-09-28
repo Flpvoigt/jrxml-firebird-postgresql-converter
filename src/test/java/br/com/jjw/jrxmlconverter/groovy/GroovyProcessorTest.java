@@ -28,7 +28,8 @@ class GroovyProcessorTest {
         var conversion = processor.convert(Path.of("envio.groovy"), source);
 
         assertEquals(1, conversion.sqlResults().size());
-        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status());
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
         assertEquals(2, conversion.sqlResults().getFirst().dynamicExpressions());
         assertTrue(conversion.source().contains("${codigo}"), conversion.source());
         assertTrue(conversion.source().contains("'${item.chave}'"), conversion.source());
@@ -62,5 +63,66 @@ class GroovyProcessorTest {
         assertEquals(1, conversion.sqlResults().size());
         assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
         assertEquals(2, conversion.sqlResults().getFirst().line());
+    }
+
+    @Test
+    void convertsDynamicFirstAndSkipToLimitAndOffset() {
+        String source = """
+                def sql = \"\"\"
+                    SELECT FIRST ${quantidade} SKIP ${inicio}
+                        CODIGO, NOME
+                    FROM PRODUTOS
+                \"\"\"
+                """;
+
+        var conversion = processor.convert(Path.of("paginacao.groovy"), source);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertTrue(conversion.source().contains("${quantidade}"), conversion.source());
+        assertTrue(conversion.source().contains("${inicio}"), conversion.source());
+        assertTrue(conversion.source().toLowerCase().contains("offset ${inicio} rows"),
+                conversion.source());
+        assertTrue(conversion.source().toLowerCase().contains("fetch next ${quantidade} rows only"),
+                conversion.source());
+    }
+
+    @Test
+    void doesNotTreatHttpDeleteMethodAsSql() {
+        String source = "def method = \"DELETE\"\nexchange(url, 'DELETE', headers)";
+
+        var conversion = processor.convert(Path.of("http.groovy"), source);
+
+        assertTrue(conversion.sqlResults().isEmpty());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void sendsSqlBuiltWithLaterAppendToReview() {
+        String source = "def sql = \"\"\"INSERT INTO PRODUTOS (CODIGO\"\"\"\n"
+                + "sql += \", NOME) VALUES (1, 'A')\"\n";
+
+        var conversion = processor.convert(Path.of("dynamic.groovy"), source);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void convertsDynamicWhereWithDeterministicFirebirdPagination() {
+        String source = "def sql = \"\"\"\n"
+                + "    SELECT FIRST 10 CODIGO\n"
+                + "    FROM PRODUTOS\n"
+                + "    ${where}\n"
+                + "    ORDER BY CODIGO\n"
+                + "\"\"\"\n";
+
+        var conversion = processor.convert(Path.of("where.groovy"), source);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertTrue(conversion.source().contains("${where}"), conversion.source());
+        assertTrue(conversion.source().toLowerCase().contains("fetch next 10 rows only"),
+                conversion.source());
     }
 }
