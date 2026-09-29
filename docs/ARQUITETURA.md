@@ -16,7 +16,8 @@ somente leitura e cada tipo de arquivo é gravado em uma saída separada.
   altera somente os SQLs completos que puderem ser analisados com segurança.
 - `sql`: protege expressões Jasper, converte o SQL e restaura os elementos preservados.
 - `domain`: representa resultados, estados e resumos da execução.
-- `report`: gera o relatório CSV e o resumo textual.
+- `report`: gera CSVs apenas com pendências, um relatório legível de revisão
+  dos Groovys e o resumo textual completo da execução.
 
 ## Regras de segurança
 
@@ -36,6 +37,8 @@ somente leitura e cada tipo de arquivo é gravado em uma saída separada.
 - Limpar as árvores JRXML e Groovy processadas quando `--overwrite` for usado.
 - Ignorar diretórios gerados e metadados de ferramentas durante a descoberta.
 - Registrar arquivo e linha dos scripts que exigem revisão manual.
+- Manter nos CSVs somente estados acionáveis (`REVIEW` e `FAILED`); os totais
+  dos demais estados permanecem no resumo da execução.
 - Retornar código de saída 3 quando existir falha ou revisão pendente.
 
 ## Estratégias de conversão
@@ -49,6 +52,18 @@ Uma segunda estratégia, usada somente quando um SQL Groovy dinâmico não pode 
 analisado integralmente, aplica transformações determinísticas sem reorganizar a
 consulta. Essa contingência somente produz saída quando remove construções
 Firebird conhecidas e não encontra outra construção incompatível restante.
+
+Para GStrings sem sintaxe Firebird, uma AST do Groovy acompanha declarações e
+atribuições anteriores de filtros opcionais. Ela reconhece cláusulas como
+`"AND ..."`, predicados como `"CAMPO IN (...)"`, alternativas vazias e valores
+escalares interpolados dentro de `VALUES`. A AST é criada apenas até a fase de
+conversão sintática: o script não é compilado nem executado. Se o arquivo não
+puder ser analisado, o processador volta à análise textual conservadora; uma
+definição ainda desconhecida permanece para revisão manual.
+
+A AST não substitui o jOOQ. Ela entende a estrutura do código Groovy e fornece
+contexto para as interpolações; o jOOQ continua responsável pela análise e pela
+conversão do SQL Firebird para PostgreSQL.
 
 As regras adicionais cobrem paginação no nível principal e em subconsultas,
 funções selecionáveis no `FROM`, `DATEADD`, `DATEDIFF`, `LIST`, `GEN_ID`,

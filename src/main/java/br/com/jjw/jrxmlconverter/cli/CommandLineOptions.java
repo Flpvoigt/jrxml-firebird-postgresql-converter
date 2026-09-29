@@ -2,13 +2,19 @@ package br.com.jjw.jrxmlconverter.cli;
 
 import java.nio.file.Path;
 
-public record CommandLineOptions(Path input, Path output, boolean overwrite, boolean dryRun, boolean help) {
+public record CommandLineOptions(Path input, Path output, boolean overwrite, boolean dryRun,
+                                 boolean help, Path schemaMetadata) {
+    public CommandLineOptions(Path input, Path output, boolean overwrite, boolean dryRun, boolean help) {
+        this(input, output, overwrite, dryRun, help, null);
+    }
+
     public static CommandLineOptions parse(String[] args) {
         Path input = null;
         Path output = null;
         boolean overwrite = false;
         boolean dryRun = false;
         boolean help = false;
+        Path schemaMetadata = null;
 
         for (int index = 0; index < args.length; index++) {
             switch (args[index]) {
@@ -16,6 +22,8 @@ public record CommandLineOptions(Path input, Path output, boolean overwrite, boo
                 case "--output" -> output = Path.of(requireValue(args, ++index, "--output"));
                 case "--overwrite" -> overwrite = true;
                 case "--dry-run" -> dryRun = true;
+                case "--schema-metadata" -> schemaMetadata = Path.of(
+                        requireValue(args, ++index, "--schema-metadata"));
                 case "--help", "-h" -> help = true;
                 default -> throw new IllegalArgumentException("Opção desconhecida: " + args[index]);
             }
@@ -23,7 +31,7 @@ public record CommandLineOptions(Path input, Path output, boolean overwrite, boo
         if (!help && input == null) {
             throw new IllegalArgumentException("A opção --input é obrigatória.");
         }
-        return new CommandLineOptions(input, output, overwrite, dryRun, help);
+        return new CommandLineOptions(input, output, overwrite, dryRun, help, schemaMetadata);
     }
 
     private static String requireValue(String[] args, int index, String option) {

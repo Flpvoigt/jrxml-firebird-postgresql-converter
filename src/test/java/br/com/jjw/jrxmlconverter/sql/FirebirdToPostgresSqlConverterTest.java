@@ -1,13 +1,33 @@
 package br.com.jjw.jrxmlconverter.sql;
 
 import br.com.jjw.jrxmlconverter.domain.ConversionStatus;
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class FirebirdToPostgresSqlConverterTest {
+    @Test
+    void convertsUpdateOrInsertWithoutMatchingUsingPrimaryKeyMetadata() {
+        var metadata = new SchemaMetadata(Map.of(
+                "PRODUTOS", new SchemaMetadata.TableMetadata(List.of("COD_EMPRESA", "COD_PRODUTO"))));
+        var converterWithMetadata = new FirebirdToPostgresSqlConverter(metadata);
+
+        var result = converterWithMetadata.convert(Path.of("rotina.groovy"), 1, """
+                UPDATE OR INSERT INTO PRODUTOS (COD_EMPRESA, COD_PRODUTO, DESCRICAO)
+                VALUES (1, 10, 'Produto')
+                """);
+
+        assertEquals(ConversionStatus.CONVERTED, result.status());
+        assertTrue(result.convertedSql().contains("ON CONFLICT (COD_EMPRESA, COD_PRODUTO)"));
+        assertTrue(result.convertedSql().contains("DESCRICAO = EXCLUDED.DESCRICAO"));
+        assertTrue(!result.convertedSql().contains("COD_EMPRESA = EXCLUDED.COD_EMPRESA"));
+    }
+
     private final FirebirdToPostgresSqlConverter converter = new FirebirdToPostgresSqlConverter();
 
     @Test
@@ -228,12 +248,74 @@ class FirebirdToPostgresSqlConverterTest {
     }
 
     @Test
-    void refusesAmbiguousFirstScopeWithSetOperation() {
+    void convertsPaginationAppliedToOnlyOneSetOperationBranch() {
         var result = converter.convert(Path.of("report.jrxml"), 1,
                 "SELECT FIRST 10 ID FROM PEDIDOS UNION ALL SELECT ID FROM HISTORICO");
 
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+                result.convertedSql());
+        assertTrue(result.convertedSql().contains("UNION ALL"), result.convertedSql());
+    }
+
+    @Test
+    void convertsPaginationWhenEverySetOperationBranchHasAnExplicitScope() {
+        var result = converter.convert(Path.of("report.jrxml"), 1, """
+                SELECT FIRST 1 ID FROM PEDIDOS
+                UNION ALL
+                SELECT SKIP 2 FIRST 3 ID FROM HISTORICO
+                """);
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        String converted = result.convertedSql().toLowerCase();
+        assertTrue(converted.contains("union all"), result.convertedSql());
+        assertTrue(converted.contains("fetch next 1 rows only"), result.convertedSql());
+        assertTrue(converted.contains("offset 2 rows"), result.convertedSql());
+        assertTrue(converted.contains("fetch next 3 rows only"), result.convertedSql());
+        assertFalse(converted.contains(" first "), result.convertedSql());
+        assertFalse(converted.contains(" skip "), result.convertedSql());
+    }
+
+    @Test
+    void keepsSetPaginationForReviewWhenThereIsAGlobalOrderBy() {
+        var result = converter.convert(Path.of("report.jrxml"), 1, """
+                SELECT FIRST 1 ID FROM PEDIDOS
+                UNION ALL
+                SELECT FIRST 1 ID FROM HISTORICO
+                ORDER BY ID
+                """);
+
         assertEquals(ConversionStatus.FAILED, result.status());
         assertTrue(result.message().contains("revisão de escopo"), result.message());
+    }
+
+    @Test
+    void convertsUniformSetOperatorsAndJasperPaginationValues() {
+        for (String operator : List.of("UNION", "INTERSECT", "EXCEPT")) {
+            var result = converter.convert(Path.of("report.jrxml"), 1, """
+                    SELECT FIRST $P{limite} ID FROM PEDIDOS
+                    %s
+                    SELECT FIRST 2 ID FROM HISTORICO
+                    """.formatted(operator));
+
+            assertEquals(ConversionStatus.CONVERTED, result.status(),
+                    operator + ": " + result.message());
+            assertTrue(result.convertedSql().contains(operator), result.convertedSql());
+            assertTrue(result.convertedSql().contains("$P{limite}"), result.convertedSql());
+            assertFalse(result.convertedSql().toLowerCase().contains(" first "), result.convertedSql());
+        }
+    }
+
+    @Test
+    void ignoresSetOperationWordsInsideTextAndComments() {
+        var result = converter.convert(Path.of("report.jrxml"), 1, """
+                SELECT FIRST 1 'UNION ALL' TEXTO
+                FROM PEDIDOS
+                /* UNION SELECT FIRST 1 ID FROM OUTRA */
+                """);
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        assertTrue(result.convertedSql().contains("'UNION ALL'"), result.convertedSql());
     }
 
     @Test

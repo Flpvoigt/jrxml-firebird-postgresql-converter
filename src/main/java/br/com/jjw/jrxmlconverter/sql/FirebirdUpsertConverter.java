@@ -1,5 +1,7 @@
 package br.com.jjw.jrxmlconverter.sql;
 
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -15,7 +17,7 @@ final class FirebirdUpsertConverter {
     private static final Pattern VALUES = Pattern.compile("(?is)\\G\\s*VALUES\\s*\\(");
     private static final Pattern MATCHING = Pattern.compile("(?is)\\G\\s*MATCHING\\s*\\(");
 
-    Optional<String> convert(String sql) {
+    Optional<String> convert(String sql, SchemaMetadata metadata) {
         Matcher prefix = PREFIX.matcher(sql);
         if (!prefix.find()) {
             return Optional.empty();
@@ -38,20 +40,28 @@ final class FirebirdUpsertConverter {
             return Optional.empty();
         }
 
+        List<String> matching;
+        int statementEnd;
         Matcher matchingMatcher = MATCHING.matcher(sql);
         matchingMatcher.region(valuesClosing + 1, sql.length());
-        if (!matchingMatcher.find()) {
-            return Optional.empty();
-        }
-        int matchingOpening = matchingMatcher.end() - 1;
-        int matchingClosing = FirebirdToPostgresSqlConverter.findClosingParenthesis(sql, matchingOpening);
-        if (matchingClosing < 0 || !onlyTerminatorAfter(sql, matchingClosing + 1)) {
-            return Optional.empty();
+        if (matchingMatcher.find()) {
+            int matchingOpening = matchingMatcher.end() - 1;
+            int matchingClosing = FirebirdToPostgresSqlConverter.findClosingParenthesis(sql, matchingOpening);
+            if (matchingClosing < 0 || !onlyTerminatorAfter(sql, matchingClosing + 1)) {
+                return Optional.empty();
+            }
+            matching = splitTopLevel(sql.substring(matchingOpening + 1, matchingClosing));
+            statementEnd = matchingClosing;
+        } else {
+            if (!onlyTerminatorAfter(sql, valuesClosing + 1)) {
+                return Optional.empty();
+            }
+            matching = metadata.primaryKey(prefix.group(1));
+            statementEnd = valuesClosing;
         }
 
         List<String> columns = splitTopLevel(sql.substring(columnsOpening + 1, columnsClosing));
         List<String> values = splitTopLevel(sql.substring(valuesOpening + 1, valuesClosing));
-        List<String> matching = splitTopLevel(sql.substring(matchingOpening + 1, matchingClosing));
         if (columns.isEmpty() || columns.size() != values.size() || matching.isEmpty()) {
             return Optional.empty();
         }
@@ -76,7 +86,7 @@ final class FirebirdUpsertConverter {
             }
             converted.append("DO UPDATE SET\n    ").append(String.join(",\n    ", assignments));
         }
-        if (sql.substring(matchingClosing + 1).contains(";")) {
+        if (sql.substring(statementEnd + 1).contains(";")) {
             converted.append(';');
         }
         return Optional.of(converted.toString());

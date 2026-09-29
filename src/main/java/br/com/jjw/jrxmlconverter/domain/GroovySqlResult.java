@@ -24,8 +24,13 @@ public record GroovySqlResult(
 
     public static GroovySqlResult review(Path file, int index, int line, String original,
                                           String message) {
+        return review(file, index, line, original, 0, message);
+    }
+
+    public static GroovySqlResult review(Path file, int index, int line, String original,
+                                          int expressions, String message) {
         return new GroovySqlResult(file, index, line, ConversionStatus.REVIEW,
-                original, original, 0, message);
+                original, original, expressions, message);
     }
 
     public static GroovySqlResult failed(Path file, int index, int line, String original,

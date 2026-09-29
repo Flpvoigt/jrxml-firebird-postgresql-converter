@@ -1,10 +1,13 @@
 package br.com.jjw.jrxmlconverter.groovy;
 
 import br.com.jjw.jrxmlconverter.domain.ConversionStatus;
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
 import br.com.jjw.jrxmlconverter.sql.FirebirdToPostgresSqlConverter;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -12,6 +15,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GroovyProcessorTest {
     private final GroovyProcessor processor =
             new GroovyProcessor(new FirebirdToPostgresSqlConverter());
+
+    @Test
+    void doesNotApplyMainDatabaseKeyToGroovyWithOwnConnection() {
+        var metadata = new SchemaMetadata(Map.of(
+                "PRODUTOS", new SchemaMetadata.TableMetadata(List.of("COD_PRODUTO"))));
+        var processorWithMetadata = new GroovyProcessor(
+                new FirebirdToPostgresSqlConverter(metadata));
+        String source = """
+                def url = 'jdbc:firebirdsql:servidor:/dados/externo.fdb'
+                def sql = \"\"\"UPDATE OR INSERT INTO PRODUTOS (COD_PRODUTO, NOME)
+                    VALUES (1, 'Teste')\"\"\"
+                """;
+
+        var conversion = processorWithMetadata.convert(Path.of("integracao.groovy"), source);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertTrue(conversion.sqlResults().getFirst().message().contains("conexão própria"));
+        assertEquals(source, conversion.source());
+    }
 
     @Test
     void convertsCompleteSqlAndRestoresGStringExpressions() {
@@ -124,5 +146,163 @@ class GroovyProcessorTest {
         assertTrue(conversion.source().contains("${where}"), conversion.source());
         assertTrue(conversion.source().toLowerCase().contains("fetch next 10 rows only"),
                 conversion.source());
+    }
+
+    @Test
+    void followsOptionalFilterDefinedBeforeCompatibleDynamicSql() {
+        String source = "def empresa = params.empresa\n"
+                + "        ? \"AND PNCNR.COD_EMPRESA IN (${listToStr(params.empresa)})\"\n"
+                + "        : ''\n"
+                + "def codigo = params.codigo ? params.codigo : \"cast(null as integer)\"\n\n"
+                + "def dados = queryList(\"\"\"\n"
+                + "    SELECT E.NOME, SUM(P.VALOR)\n"
+                + "    FROM PEGAR_DADOS(${codigo}) P, EMPRESAS E\n"
+                + "    WHERE P.COD_EMPRESA = E.COD_EMPRESA\n"
+                + "      ${empresa}\n"
+                + "    GROUP BY 1\n"
+                + "\"\"\")\n";
+
+        var conversion = processor.convert(Path.of("faturamento-empresa.groovy"), source);
+        var query = conversion.sqlResults().getLast();
+
+        assertEquals(ConversionStatus.CONVERTED, query.status(), query.message());
+        assertEquals(2, query.dynamicExpressions());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void keepsUnknownStandaloneDynamicClauseForReview() {
+        String source = "def complemento = criarSqlComplexo(params)\n"
+                + "def dados = queryList(\"\"\"\n"
+                + "    SELECT CODIGO\n"
+                + "    FROM PRODUTOS\n"
+                + "    ${complemento}\n"
+                + "\"\"\")\n";
+
+        var conversion = processor.convert(Path.of("desconhecido.groovy"), source);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertEquals(1, conversion.sqlResults().getFirst().dynamicExpressions());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void astFollowsBarePredicateDefinedByTernaryExpression() {
+        String source = "def empresa = params.empresa\n"
+                + "        ? \"PNCNR.COD_EMPRESA IN (${listToStr(params.empresa)})\"\n"
+                + "        : '1=1'\n"
+                + "def sql = \"\"\"\n"
+                + "    SELECT PNCNR.COD_EMPRESA\n"
+                + "    FROM PEDIDOS PNCNR\n"
+                + "    WHERE\n"
+                + "      ${empresa}\n"
+                + "    GROUP BY 1\n"
+                + "\"\"\"\n";
+
+        var conversion = processor.convert(Path.of("predicado.groovy"), source);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getLast().status(),
+                conversion.sqlResults().getLast().message());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void treatsStandalonePropertyInterpolationInsideValuesAsScalar() {
+        String source = "def sql = \"\"\"\n"
+                + "    INSERT INTO ITENS (CODIGO, PRODUTO)\n"
+                + "    VALUES (\n"
+                + "      ${item.codigo},\n"
+                + "      ${item.produto}\n"
+                + "    )\n"
+                + "\"\"\"\n";
+
+        var conversion = processor.convert(Path.of("insert.groovy"), source);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void classifiesConditionalFilterBuiltFromAndPrefixAndMethodCall() {
+        String source = "def buscar(request) {\n"
+                + "    def where = ''\n"
+                + "    if (request.params.search) {\n"
+                + "        where = ' and ' + montaWhereSuperBusca(request.params.search, "
+                + "\"upper(P.NOME) like upper('%__word__%')\", \"__word__\")\n"
+                + "    }\n"
+                + "    def sql = \"\"\"\n"
+                + "        SELECT P.CODIGO\n"
+                + "        FROM PRODUTOS P\n"
+                + "        WHERE P.ATIVO = -1\n"
+                + "        ${where}\n"
+                + "    \"\"\"\n"
+                + "}\n";
+
+        var conversion = processor.convert(Path.of("filtro-opcional.groovy"), source);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void movesConditionalFirebirdPaginationToTheEndOfTheQuery() {
+        String source = "def buscar(page, size) {\n"
+                + "    def where = ''\n"
+                + "    if (page != null) {\n"
+                + "        where = ' and ' + criarFiltro(page)\n"
+                + "    }\n"
+                + "    def sqlFirst = ''\n"
+                + "    if (page != null && size != null) {\n"
+                + "        sqlFirst = \"first ${size} skip ${page * size}\"\n"
+                + "    }\n"
+                + "    def sql = \"\"\"\n"
+                + "        SELECT ${sqlFirst}\n"
+                + "          P.CODIGO\n"
+                + "        FROM PRODUTOS P\n"
+                + "        WHERE P.ATIVO = -1\n"
+                + "        ${where}\n"
+                + "    \"\"\"\n"
+                + "}\n";
+
+        var conversion = processor.convert(Path.of("paginacao-condicional.groovy"), source);
+        var result = conversion.sqlResults().getFirst();
+
+        assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
+        assertTrue(conversion.source().contains(
+                "sqlFirst = \"offset ${page * size} rows fetch next ${size} rows only\""),
+                conversion.source());
+        assertTrue(conversion.source().matches(
+                "(?s).*WHERE P\\.ATIVO = -1.*\\$\\{where}.*\\$\\{sqlFirst}\\s*\"\"\".*"),
+                conversion.source());
+        assertTrue(!conversion.source().matches("(?s).*SELECT\\s+\\$\\{sqlFirst}.*"),
+                conversion.source());
+    }
+
+    @Test
+    void preservesDynamicPaginationWhenTheVariableHasMoreThanOneUse() {
+        String source = "def sqlFirst = ''\n"
+                + "if (page != null) sqlFirst = \"first ${size}\"\n"
+                + "def sql = \"\"\"SELECT ${sqlFirst} CODIGO FROM PRODUTOS\"\"\"\n"
+                + "println sqlFirst\n"
+                + "def log = \"Paginação: ${sqlFirst}\"\n";
+
+        var conversion = processor.convert(Path.of("uso-multiplo.groovy"), source);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertEquals(source, conversion.source());
+    }
+
+    @Test
+    void preservesPaginationWhoseAssignmentIsNotConditional() {
+        String source = "def sqlFirst = ''\n"
+                + "sqlFirst = \"first ${size}\"\n"
+                + "def sql = \"\"\"SELECT ${sqlFirst} CODIGO FROM PRODUTOS\"\"\"\n";
+
+        var conversion = processor.convert(Path.of("sem-condicao.groovy"), source);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertEquals(source, conversion.source());
     }
 }

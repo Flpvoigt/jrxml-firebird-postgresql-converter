@@ -26,14 +26,22 @@ public final class GroovyProcessor {
     private static final Pattern SQL_FRAGMENT = Pattern.compile(
             "(?is)^\\s*(?:AND|OR|WHERE|JOIN|LEFT\\s+JOIN|RIGHT\\s+JOIN|INNER\\s+JOIN|"
                     + "ORDER\\s+BY|GROUP\\s+BY|HAVING|SET|VALUES)\\b.*\\b(?:SELECT|INSERT|UPDATE|DELETE)\\b");
+    private static final Pattern EXPLICIT_DATABASE_CONNECTION = Pattern.compile(
+            "(?i)jdbc:(?:firebirdsql|postgresql):");
 
     private final FirebirdToPostgresSqlConverter sqlConverter;
+    private final GroovyAstAnalyzer astAnalyzer = new GroovyAstAnalyzer();
+    private final GroovyDynamicPaginationRewriter paginationRewriter =
+            new GroovyDynamicPaginationRewriter();
 
     public GroovyProcessor(FirebirdToPostgresSqlConverter sqlConverter) {
         this.sqlConverter = sqlConverter;
     }
 
     public GroovyConversion convert(Path relativeFile, String source) {
+        source = paginationRewriter.rewrite(source);
+        GroovyAstAnalyzer.Analysis ast = astAnalyzer.analyze(source);
+        boolean hasExplicitDatabaseConnection = EXPLICIT_DATABASE_CONNECTION.matcher(source).find();
         List<StringLiteral> literals = findStringLiterals(source);
         List<GroovySqlResult> results = new ArrayList<>();
         StringBuilder convertedSource = new StringBuilder(source.length() + 256);
@@ -51,14 +59,27 @@ public final class GroovyProcessor {
             sqlIndex++;
             GroovySqlResult result;
             String replacement = sql;
+            int dynamicExpressions = countInterpolations(sql, literal.interpolated());
             if (fragment || isConcatenated(source, literal)) {
                 String reason = fragment
                         ? "Fragmento de SQL dinâmico; conversão automática por partes seria insegura."
                         : "SQL montado por concatenação; é necessário analisar a expressão completa.";
-                result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql, reason);
+                result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                        dynamicExpressions, reason);
+            } else if (dynamicExpressions > 0 && !sqlConverter.containsKnownFirebirdSyntax(sql)) {
+                String unresolvedExpression = unresolvedDynamicStructure(source, literal, sql, ast);
+                if (unresolvedExpression == null) {
+                    result = GroovySqlResult.converted(relativeFile, sqlIndex, literal.line(), sql,
+                            sql, dynamicExpressions);
+                } else {
+                    result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                            dynamicExpressions,
+                            unresolvedExpression);
+                }
             } else {
                 TokenizedGroovy tokenized = protectInterpolations(sql, literal.interpolated());
-                QueryResult query = sqlConverter.convert(relativeFile, sqlIndex, tokenized.sql());
+                QueryResult query = sqlConverter.convert(
+                        relativeFile, sqlIndex, tokenized.sql(), !hasExplicitDatabaseConnection);
                 if (query.succeeded()) {
                     replacement = restoreInterpolations(query.convertedSql(), tokenized.tokens());
                     replacement = preserveOuterWhitespace(sql, replacement);
@@ -66,7 +87,7 @@ public final class GroovyProcessor {
                             replacement, tokenized.tokens().size());
                 } else if (query.message().startsWith("UPDATE OR INSERT sem MATCHING")) {
                     result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
-                            query.message());
+                            tokenized.tokens().size(), query.message());
                 } else if (!tokenized.tokens().isEmpty()) {
                     QueryResult lenient = sqlConverter.convertLenientDynamic(
                             relativeFile, sqlIndex, tokenized.sql());
@@ -77,10 +98,12 @@ public final class GroovyProcessor {
                                 replacement, tokenized.tokens().size());
                     } else {
                         result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                                tokenized.tokens().size(),
                                 "SQL dinâmico não pôde ser analisado com segurança: " + query.message());
                     }
                 } else if (isDynamicallyExtended(source, literal)) {
                     result = GroovySqlResult.review(relativeFile, sqlIndex, literal.line(), sql,
+                            tokenized.tokens().size(),
                             "SQL montado em várias etapas; é necessário analisar a expressão completa.");
                 } else {
                     result = GroovySqlResult.failed(relativeFile, sqlIndex, literal.line(), sql,
@@ -97,6 +120,198 @@ public final class GroovyProcessor {
 
         convertedSource.append(source, copiedUntil, source.length());
         return new GroovyConversion(convertedSource.toString(), results);
+    }
+
+    private static String unresolvedDynamicStructure(String source, StringLiteral literal, String sql,
+                                                     GroovyAstAnalyzer.Analysis ast) {
+        int index = 0;
+        while (index < sql.length()) {
+            Interpolation interpolation = interpolationAt(sql, index);
+            if (interpolation == null) {
+                index++;
+                continue;
+            }
+            String variable = simpleVariable(interpolation.expression());
+            int useLine = literal.line() + countNewlines(sql, interpolation.start());
+            if (isSelectModifierPosition(sql, interpolation.start())) {
+                if (variable != null && ast.isOptionalFirebirdPagination(variable, useLine)) {
+                    return "A expressão " + interpolation.expression()
+                            + " produz FIRST/SKIP condicional. No PostgreSQL, a paginação precisa ser movida para o final da consulta.";
+                }
+                return "A expressão " + interpolation.expression()
+                        + " ocupa a posição de modificador do SELECT e não pôde ser classificada com segurança.";
+            }
+            if (isStandaloneOnLine(sql, interpolation.start(), interpolation.end())
+                    && !isInsideValuesClause(sql, interpolation.start())) {
+                if (variable != null && ast.isOptionalPostgresPagination(variable, useLine)
+                        && isAtEndOfQuery(sql, interpolation.end())) {
+                    index = interpolation.end();
+                    continue;
+                }
+                boolean understoodByAst = variable != null && ast.isOptionalCondition(variable, useLine);
+                if (!understoodByAst
+                        && !isKnownOptionalClause(source, literal.delimiterStart(), interpolation.expression())) {
+                    return "A expressão " + interpolation.expression()
+                            + " não pôde ser classificada como cláusula SQL opcional.";
+                }
+            }
+            index = interpolation.end();
+        }
+        return null;
+    }
+
+    private static boolean isAtEndOfQuery(String sql, int position) {
+        return sql.substring(position).isBlank();
+    }
+
+    private static boolean isSelectModifierPosition(String sql, int position) {
+        String before = sql.substring(0, position);
+        return before.matches("(?is)^\\s*SELECT\\s*$");
+    }
+
+    private static int countNewlines(String text, int endExclusive) {
+        int count = 0;
+        for (int index = 0; index < endExclusive; index++) {
+            if (text.charAt(index) == '\n') {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isInsideValuesClause(String sql, int position) {
+        Matcher matcher = Pattern.compile("(?i)\\bVALUES\\b").matcher(sql.substring(0, position));
+        int valuesEnd = -1;
+        while (matcher.find()) {
+            valuesEnd = matcher.end();
+        }
+        if (valuesEnd < 0) {
+            return false;
+        }
+
+        int depth = 0;
+        boolean quoted = false;
+        char quote = 0;
+        for (int index = valuesEnd; index < position; index++) {
+            char current = sql.charAt(index);
+            if (quoted) {
+                if (current == quote && (index == 0 || sql.charAt(index - 1) != '\\')) {
+                    quoted = false;
+                }
+                continue;
+            }
+            if (current == '\'' || current == '"') {
+                quoted = true;
+                quote = current;
+            } else if (current == '(') {
+                depth++;
+            } else if (current == ')') {
+                depth--;
+            }
+        }
+        return depth > 0;
+    }
+
+    private static boolean isStandaloneOnLine(String sql, int start, int end) {
+        int lineStart = sql.lastIndexOf('\n', start - 1) + 1;
+        int lineEnd = sql.indexOf('\n', end);
+        if (lineEnd < 0) {
+            lineEnd = sql.length();
+        }
+        return sql.substring(lineStart, start).isBlank() && sql.substring(end, lineEnd).isBlank();
+    }
+
+    private static boolean isKnownOptionalClause(String source, int beforePosition, String expression) {
+        String variable = simpleVariable(expression);
+        if (variable == null) {
+            return false;
+        }
+
+        String[] lines = source.substring(0, beforePosition).split("\\R", -1);
+        Pattern assignment = Pattern.compile("^\\s*(?:def\\s+)?" + Pattern.quote(variable) + "\\s*=");
+        Pattern anyAssignment = Pattern.compile(
+                "^\\s*(?:def\\s+)?[A-Za-z_$][A-Za-z0-9_$]*\\s*=");
+        for (int index = lines.length - 1; index >= 0; index--) {
+            String line = lines[index];
+            if (!assignment.matcher(line).find()) {
+                continue;
+            }
+            StringBuilder definition = new StringBuilder(line);
+            for (int next = index + 1; next < lines.length && definition.indexOf(";") < 0; next++) {
+                if (anyAssignment.matcher(lines[next]).find()) {
+                    break;
+                }
+                definition.append('\n').append(lines[next]);
+            }
+            String definitionText = definition.toString();
+            List<StringLiteral> values = findStringLiterals(definitionText);
+            if (values.isEmpty()) {
+                return false;
+            }
+            boolean ternary = definitionText.indexOf('?') >= 0 && definitionText.indexOf(':') >= 0;
+            if (ternary && values.size() < 2) {
+                return false;
+            }
+            for (StringLiteral value : values) {
+                String content = definitionText.substring(value.contentStart(), value.contentEnd()).trim();
+                if (!content.isEmpty() && !content.matches("(?is)^(?:AND|OR|WHERE)\\b.+")) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static String simpleVariable(String expression) {
+        String value = expression;
+        if (value.startsWith("${") && value.endsWith("}")) {
+            value = value.substring(2, value.length() - 1).trim();
+        } else if (value.startsWith("$")) {
+            value = value.substring(1);
+        }
+        return value.matches("[A-Za-z_$][A-Za-z0-9_$]*") ? value : null;
+    }
+
+    private static int countInterpolations(String sql, boolean interpolated) {
+        if (!interpolated) {
+            return 0;
+        }
+        int count = 0;
+        int index = 0;
+        while (index < sql.length()) {
+            Interpolation interpolation = interpolationAt(sql, index);
+            if (interpolation == null) {
+                index++;
+            } else {
+                count++;
+                index = interpolation.end();
+            }
+        }
+        return count;
+    }
+
+    private static Interpolation interpolationAt(String text, int index) {
+        if (text.charAt(index) != '$' || index + 1 >= text.length()) {
+            return null;
+        }
+        if (text.charAt(index + 1) == '{') {
+            int end = skipBalancedExpression(text, index + 1);
+            return end > index + 2 ? new Interpolation(index, end, text.substring(index, end)) : null;
+        }
+        if (!Character.isJavaIdentifierStart(text.charAt(index + 1))) {
+            return null;
+        }
+        int end = index + 2;
+        while (end < text.length()) {
+            char current = text.charAt(end);
+            if (Character.isJavaIdentifierPart(current) || current == '.') {
+                end++;
+            } else {
+                break;
+            }
+        }
+        return new Interpolation(index, end, text.substring(index, end));
     }
 
     private static boolean isConcatenated(String source, StringLiteral literal) {
@@ -321,5 +536,8 @@ public final class GroovyProcessor {
     }
 
     private record TokenizedGroovy(String sql, Map<String, String> tokens) {
+    }
+
+    private record Interpolation(int start, int end, String expression) {
     }
 }

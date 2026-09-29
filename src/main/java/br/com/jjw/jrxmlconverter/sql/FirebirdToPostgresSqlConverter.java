@@ -1,6 +1,7 @@
 package br.com.jjw.jrxmlconverter.sql;
 
 import br.com.jjw.jrxmlconverter.domain.QueryResult;
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
 import org.jooq.DSLContext;
 import org.jooq.Query;
 import org.jooq.SQLDialect;
@@ -9,7 +10,9 @@ import org.jooq.conf.Settings;
 import org.jooq.impl.DSL;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -69,8 +72,16 @@ public final class FirebirdToPostgresSqlConverter {
 
     private final DSLContext postgres;
     private final FirebirdUpsertConverter upsertConverter = new FirebirdUpsertConverter();
+    private final SetOperationPaginationConverter setPaginationConverter =
+            new SetOperationPaginationConverter();
+    private final SchemaMetadata schemaMetadata;
 
     public FirebirdToPostgresSqlConverter() {
+        this(SchemaMetadata.empty());
+    }
+
+    public FirebirdToPostgresSqlConverter(SchemaMetadata schemaMetadata) {
+        this.schemaMetadata = schemaMetadata == null ? SchemaMetadata.empty() : schemaMetadata;
         Settings settings = new Settings()
                 .withParseDialect(SQLDialect.FIREBIRD)
                 .withParseUnknownFunctions(ParseUnknownFunctions.IGNORE)
@@ -79,6 +90,11 @@ public final class FirebirdToPostgresSqlConverter {
     }
 
     public QueryResult convert(Path file, int queryIndex, String originalSql) {
+        return convert(file, queryIndex, originalSql, true);
+    }
+
+    public QueryResult convert(Path file, int queryIndex, String originalSql,
+                               boolean useSchemaMetadata) {
         if (originalSql.isBlank()) {
             return QueryResult.empty(file, queryIndex);
         }
@@ -86,6 +102,15 @@ public final class FirebirdToPostgresSqlConverter {
         boolean terminated = TRAILING_SEMICOLON.matcher(originalSql).find();
         String sqlToConvert = terminated
                 ? TRAILING_SEMICOLON.matcher(originalSql).replaceFirst("") : originalSql;
+        Optional<SetOperationPaginationConverter.SetOperation> setOperation =
+                setPaginationConverter.analyze(sqlToConvert);
+        if (setOperation.isPresent()) {
+            Optional<QueryResult> convertedSet = convertPaginatedSetOperation(
+                    file, queryIndex, originalSql, setOperation.get(), terminated);
+            if (convertedSet.isPresent()) {
+                return convertedSet.get();
+            }
+        }
         ProtectedSql protectedSql = protect(sqlToConvert);
         try {
             if (protectedSql.ambiguousSetPagination()) {
@@ -93,10 +118,15 @@ public final class FirebirdToPostgresSqlConverter {
                         "FIRST/SKIP combinado com UNION, INTERSECT ou EXCEPT exige revisão de escopo.");
             }
             if (startsWithUpdateOrInsert(protectedSql.sql())) {
-                Optional<String> upsert = upsertConverter.convert(protectedSql.sql());
+                Optional<String> upsert = upsertConverter.convert(
+                        protectedSql.sql(), useSchemaMetadata ? schemaMetadata : SchemaMetadata.empty());
                 if (upsert.isEmpty()) {
+                    String reason = useSchemaMetadata
+                            ? "UPDATE OR INSERT sem MATCHING explícito; a chave de conflito não pode ser inferida com segurança."
+                            : "UPDATE OR INSERT sem MATCHING explícito em arquivo com conexão própria; "
+                            + "a chave do banco principal não será aplicada automaticamente.";
                     return QueryResult.failed(file, queryIndex, originalSql,
-                            "UPDATE OR INSERT sem MATCHING explícito; a chave de conflito não pode ser inferida com segurança.");
+                            reason);
                 }
                 String converted = restore(upsert.get(), protectedSql.tableFunctions());
                 converted = restore(converted, protectedSql.jasperExpressions());
@@ -170,6 +200,35 @@ public final class FirebirdToPostgresSqlConverter {
         return QueryResult.converted(file, queryIndex, originalSql, converted, 0);
     }
 
+    public boolean containsKnownFirebirdSyntax(String sql) {
+        return sql != null && hasRemainingFirebirdSyntax(sql);
+    }
+
+    private Optional<QueryResult> convertPaginatedSetOperation(
+            Path file, int queryIndex, String originalSql,
+            SetOperationPaginationConverter.SetOperation operation, boolean terminated) {
+        List<String> convertedBranches = new ArrayList<>();
+        int jasperTokens = 0;
+        for (String branch : operation.branches()) {
+            QueryResult convertedBranch = convert(file, queryIndex, branch);
+            if (!convertedBranch.succeeded()) {
+                return Optional.empty();
+            }
+            convertedBranches.add(convertedBranch.convertedSql());
+            jasperTokens += convertedBranch.jasperTokens();
+        }
+
+        String converted = setPaginationConverter.combine(operation, convertedBranches);
+        if (hasRemainingFirebirdSyntax(converted)) {
+            return Optional.empty();
+        }
+        if (terminated) {
+            converted += ";";
+        }
+        return Optional.of(QueryResult.converted(
+                file, queryIndex, originalSql, converted, jasperTokens));
+    }
+
     private static boolean startsWithUpdateOrInsert(String sql) {
         return sql.matches("(?is)^\\s*UPDATE\\s+OR\\s+INSERT\\b.*");
     }
@@ -198,7 +257,7 @@ public final class FirebirdToPostgresSqlConverter {
 
         PaginationSql pagination = protectTopLevelPagination(tokenizedSql);
         boolean ambiguousSetPagination = (pagination.first() != null || pagination.skip() != null)
-                && hasTopLevelSetOperator(tokenizedSql);
+                && setPaginationConverter.hasTopLevelSetOperator(tokenizedSql);
         pagination = new PaginationSql(rewriteNestedPaginationDirect(pagination.sql()),
                 pagination.first(), pagination.skip());
         TokenizedSql tableFunctions = protectTableFunctions(pagination.sql());
@@ -740,42 +799,6 @@ public final class FirebirdToPostgresSqlConverter {
     private static boolean hasRemainingFirebirdSyntax(String sql) {
         String protectedSql = protectTextRegions(sql).sql();
         return REMAINING_FIREBIRD_SYNTAX.matcher(protectedSql).find();
-    }
-
-    private static boolean hasTopLevelSetOperator(String sql) {
-        int depth = 0;
-        boolean inString = false;
-        for (int index = 0; index < sql.length();) {
-            char current = sql.charAt(index);
-            if (current == '\'' && inString && index + 1 < sql.length()
-                    && sql.charAt(index + 1) == '\'') {
-                index += 2;
-                continue;
-            }
-            if (current == '\'') {
-                inString = !inString;
-                index++;
-                continue;
-            }
-            if (!inString && current == '(') {
-                depth++;
-            } else if (!inString && current == ')') {
-                depth--;
-            } else if (!inString && depth == 0 && Character.isLetter(current)) {
-                int end = index + 1;
-                while (end < sql.length() && Character.isLetter(sql.charAt(end))) {
-                    end++;
-                }
-                String word = sql.substring(index, end).toUpperCase(Locale.ROOT);
-                if (word.equals("UNION") || word.equals("INTERSECT") || word.equals("EXCEPT")) {
-                    return true;
-                }
-                index = end;
-                continue;
-            }
-            index++;
-        }
-        return false;
     }
 
     private static String restore(String sql, Map<String, String> tokens) {
