@@ -5,6 +5,8 @@ import br.com.jjw.jrxmlconverter.domain.ConversionRun;
 import br.com.jjw.jrxmlconverter.domain.ConversionSummary;
 import br.com.jjw.jrxmlconverter.groovy.GroovyProcessor;
 import br.com.jjw.jrxmlconverter.jrxml.JrxmlProcessor;
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
+import br.com.jjw.jrxmlconverter.metadata.SchemaMetadataLoader;
 import br.com.jjw.jrxmlconverter.report.ConversionReportWriter;
 import br.com.jjw.jrxmlconverter.service.ConversionService;
 import br.com.jjw.jrxmlconverter.sql.FirebirdToPostgresSqlConverter;
@@ -32,7 +34,8 @@ public final class JrxmlConverterApplication {
                 return 0;
             }
 
-            ConversionService service = createService();
+            SchemaMetadata metadata = new SchemaMetadataLoader().load(options.schemaMetadata());
+            ConversionService service = createService(metadata);
             ConversionRun run = service.execute(options);
             Path input = options.input().toAbsolutePath().normalize();
             Path output = options.output() == null ? null : options.output().toAbsolutePath().normalize();
@@ -60,8 +63,8 @@ public final class JrxmlConverterApplication {
         }
     }
 
-    private static ConversionService createService() {
-        var sqlConverter = new FirebirdToPostgresSqlConverter();
+    private static ConversionService createService(SchemaMetadata metadata) {
+        var sqlConverter = new FirebirdToPostgresSqlConverter(metadata);
         return new ConversionService(
                 new SecureXmlParser(), new SubreportInspector(), new JrxmlProcessor(sqlConverter),
                 new GroovyProcessor(sqlConverter));
@@ -103,6 +106,7 @@ public final class JrxmlConverterApplication {
                   --output      Raiz das saídas separadas nas pastas jrxml e groovy.
                   --overwrite   Permite substituir arquivos existentes somente na saída.
                   --dry-run     Analisa e converte em memória, sem escrever arquivos.
+                  --schema-metadata  JSON com as chaves das tabelas extraídas do banco.
                   --help        Exibe esta ajuda.
                 """);
     }

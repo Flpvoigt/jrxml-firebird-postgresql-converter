@@ -15,7 +15,9 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <jooq.version>3.21.8</jooq.version>
+        <groovy.version>4.0.33</groovy.version>
         <jakarta.xml.bind.version>4.0.2</jakarta.xml.bind.version>
+        <jackson.version>2.18.3</jackson.version>
         <junit.version>5.10.3</junit.version>
     </properties>
 
@@ -26,9 +28,19 @@
             <version>${jooq.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.groovy</groupId>
+            <artifactId>groovy</artifactId>
+            <version>${groovy.version}</version>
+        </dependency>
+        <dependency>
             <groupId>jakarta.xml.bind</groupId>
             <artifactId>jakarta.xml.bind-api</artifactId>
             <version>${jakarta.xml.bind.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

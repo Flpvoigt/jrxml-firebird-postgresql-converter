@@ -5,6 +5,26 @@ Ferramenta Java 21 para localizar consultas SQL em relatórios JasperReports
 PostgreSQL usando o parser do jOOQ. A entrada é sempre somente leitura; os
 arquivos convertidos são gravados em outro diretório.
 
+## Metadados de schema
+
+O conversor aceita opcionalmente `--schema-metadata <arquivo.json>`. Esse arquivo permite
+converter `UPDATE OR INSERT` sem `MATCHING`, usando a chave primária extraída do Firebird
+pela ferramenta de migração.
+
+```json
+{
+  "formatVersion": 1,
+  "tables": {
+    "PRODUTOS": {
+      "primaryKey": ["COD_EMPRESA", "COD_PRODUTO"]
+    }
+  }
+}
+```
+
+Sem os metadados, ou quando um Groovy declara uma conexão JDBC própria, a consulta é
+preservada e enviada para revisão.
+
 ## Estrutura
 
 ```text
@@ -67,12 +87,25 @@ entrada. A saída é organizada assim:
 
 ```text
 output\postgresql\
-├── jrxml\                         # JRXML convertidos e relatório próprio
-│   └── conversion-report.csv
+├── jrxml\                         # JRXML convertidos e relatórios próprios
+│   ├── conversion-report.csv
+│   └── review-required.txt         # pendências JRXML em formato legível
 ├── groovy\                        # Groovy com estrutura relativa e relatório próprio
-│   └── conversion-report.csv
+│   ├── conversion-report.csv
+│   └── review-required.txt         # pendências Groovy em formato legível
 └── conversion-summary.txt         # resumo geral
 ```
+
+Os arquivos `conversion-report.csv` contêm somente itens que exigem atenção
+(`REVIEW` ou `FAILED`). Conversões concluídas, consultas vazias e linguagens não
+SQL continuam contabilizadas no `conversion-summary.txt`, mas não poluem os
+CSVs. O arquivo `groovy/review-required.txt` descreve cada pendência Groovy em
+linguagem orientada à correção: o que foi encontrado, por que não houve
+conversão, qual o risco no PostgreSQL, como resolver, o detalhe técnico e um
+trecho limitado do SQL original.
+
+O diretório `jrxml` também recebe um `review-required.txt` com a mesma estrutura
+explicativa para cada queryString que falhou ou exige revisão.
 
 SQLs Groovy montados por concatenação ou em fragmentos são preservados sem
 alteração e recebem o estado `REVIEW` no CSV, com arquivo e linha. Falhas e
@@ -94,6 +127,19 @@ de contingência. Ela altera somente construções Firebird determinísticas, co
 interpolações Groovy.
 Se não for possível provar que a alteração é segura, o conteúdo original é
 preservado e recebe `REVIEW`.
+
+Uma análise por AST do Groovy acompanha definições anteriores usadas nas
+GStrings, sem executar o script. Isso permite distinguir filtros opcionais e
+valores escalares de cláusulas realmente desconhecidas. Se a AST não conseguir
+ler um arquivo, a análise textual anterior continua disponível como fallback.
+O jOOQ permanece sendo o responsável pela conversão do SQL.
+
+Quando uma GString já é compatível com PostgreSQL, o processador acompanha
+definições anteriores de filtros opcionais simples, como
+`def empresa = condição ? "AND ..." : ""`. Se todas as cláusulas dinâmicas
+isoladas forem compreendidas, a consulta é preservada exatamente e não entra no
+relatório de revisão. Definições produzidas por métodos ou fluxos desconhecidos
+continuam em `REVIEW`.
 
 Os Groovy e JRXML preservam seus caminhos relativos, evitando colisões entre
 arquivos homônimos e mantendo as relações entre relatórios master e subreports.
