@@ -37,12 +37,14 @@ class ConversionReportWriterTest {
 
         new ConversionReportWriter().write(temporaryDirectory, run);
 
-        String jrxmlCsv = Files.readString(temporaryDirectory.resolve("jrxml/conversion-report.csv"));
+        String jrxmlCsv = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/jrxml/conversion-report.csv"));
         assertTrue(jrxmlCsv.contains("FAILED"), jrxmlCsv);
         assertFalse(jrxmlCsv.contains("CONVERTED"), jrxmlCsv);
         assertFalse(jrxmlCsv.contains("EMPTY"), jrxmlCsv);
 
-        String jrxmlReview = Files.readString(temporaryDirectory.resolve("jrxml/review-required.txt"));
+        String jrxmlReview = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/jrxml/review-required.txt"));
         assertTrue(jrxmlReview.contains("PENDÊNCIAS DE CONVERSÃO — JRXML"), jrxmlReview);
         assertTrue(jrxmlReview.contains("Local: QueryString 3"), jrxmlReview);
         assertTrue(jrxmlReview.contains("Problema: PROVÁVEL VÍRGULA AUSENTE NO SELECT"), jrxmlReview);
@@ -51,12 +53,14 @@ class ConversionReportWriterTest {
         assertTrue(jrxmlReview.contains("linha 2, coluna 15"), jrxmlReview);
         assertFalse(jrxmlReview.contains("[*]"), jrxmlReview);
 
-        String groovyCsv = Files.readString(temporaryDirectory.resolve("groovy/conversion-report.csv"));
+        String groovyCsv = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/groovy/conversion-report.csv"));
         assertTrue(groovyCsv.contains("REVIEW"), groovyCsv);
         assertTrue(groovyCsv.contains("FAILED"), groovyCsv);
         assertFalse(groovyCsv.contains("CONVERTED"), groovyCsv);
 
-        String review = Files.readString(temporaryDirectory.resolve("groovy/review-required.txt"));
+        String review = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/groovy/review-required.txt"));
         assertTrue(review.contains("Arquivo: charts\\grafico.groovy")
                 || review.contains("Arquivo: charts/grafico.groovy"), review);
         assertTrue(review.contains("PENDÊNCIA 1/2"), review);
@@ -75,11 +79,14 @@ class ConversionReportWriterTest {
 
         new ConversionReportWriter().write(temporaryDirectory, run);
 
-        String csv = Files.readString(temporaryDirectory.resolve("groovy/conversion-report.csv"));
+        String csv = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/groovy/conversion-report.csv"));
         assertFalse(csv.contains("CONVERTED"), csv);
-        String review = Files.readString(temporaryDirectory.resolve("groovy/review-required.txt"));
+        String review = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/groovy/review-required.txt"));
         assertTrue(review.contains("Nenhuma pendência encontrada."), review);
-        String jrxmlReview = Files.readString(temporaryDirectory.resolve("jrxml/review-required.txt"));
+        String jrxmlReview = Files.readString(temporaryDirectory.resolve(
+                "_conversion-reports/jrxml/review-required.txt"));
         assertTrue(jrxmlReview.contains("Nenhuma pendência encontrada."), jrxmlReview);
     }
 

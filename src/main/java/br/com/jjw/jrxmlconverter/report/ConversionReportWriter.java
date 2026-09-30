@@ -5,6 +5,8 @@ import br.com.jjw.jrxmlconverter.domain.ConversionSummary;
 import br.com.jjw.jrxmlconverter.domain.ConversionStatus;
 import br.com.jjw.jrxmlconverter.domain.GroovySqlResult;
 import br.com.jjw.jrxmlconverter.domain.QueryResult;
+import br.com.jjw.jrxmlconverter.domain.SubreportReferenceResult;
+import br.com.jjw.jrxmlconverter.domain.SubreportResolutionStatus;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -31,20 +33,26 @@ public final class ConversionReportWriter {
     private static final Pattern GROOVY_INTERNAL_TOKEN = Pattern.compile("__groovy_token_\\d+__");
 
     public void write(Path output, ConversionRun run) throws IOException {
+        Path reportOutput = output.resolve("_conversion-reports");
+        Files.createDirectories(reportOutput);
         if (run.groupedByProject()) {
-            writeGroupedReports(output, run);
-            writeSummary(output.resolve("conversion-summary.txt"), run.summary());
+            writeGroupedReports(reportOutput.resolve("projects"), run);
+            writeSubreportReview(reportOutput.resolve("subreport-review-required.txt"),
+                    run.subreportReferences());
+            writeSummary(reportOutput.resolve("conversion-summary.txt"), run.summary());
             return;
         }
-        Path jrxmlOutput = output.resolve("jrxml");
-        Path groovyOutput = output.resolve("groovy");
+        Path jrxmlOutput = reportOutput.resolve("jrxml");
+        Path groovyOutput = reportOutput.resolve("groovy");
         Files.createDirectories(jrxmlOutput);
         Files.createDirectories(groovyOutput);
         writeJrxmlCsv(jrxmlOutput.resolve("conversion-report.csv"), run.queryResults());
         writeJrxmlReview(jrxmlOutput.resolve("review-required.txt"), run.queryResults());
         writeGroovyCsv(groovyOutput.resolve("conversion-report.csv"), run.groovyResults());
         writeGroovyReview(groovyOutput.resolve("review-required.txt"), run.groovyResults());
-        writeSummary(output.resolve("conversion-summary.txt"), run.summary());
+        writeSubreportReview(reportOutput.resolve("subreport-review-required.txt"),
+                run.subreportReferences());
+        writeSummary(reportOutput.resolve("conversion-summary.txt"), run.summary());
     }
 
     private static void writeGroupedReports(Path output, ConversionRun run) throws IOException {
@@ -163,6 +171,51 @@ public final class ConversionReportWriter {
             }
         }
         Files.writeString(destination, text, StandardCharsets.UTF_8);
+    }
+
+    private static void writeSubreportReview(Path destination,
+                                             List<SubreportReferenceResult> results) throws IOException {
+        List<SubreportReferenceResult> pending = results.stream()
+                .filter(result -> result.status().requiresAttention())
+                .toList();
+        StringBuilder text = reviewHeader("PENDÊNCIAS DE SUBREPORTS", pending.size());
+        if (pending.isEmpty()) {
+            text.append("RESULTADO\n")
+                    .append("  Todas as referências foram resolvidas sem ambiguidade.\n");
+        } else {
+            for (int index = 0; index < pending.size(); index++) {
+                SubreportReferenceResult result = pending.get(index);
+                text.append(REPORT_SEPARATOR).append('\n')
+                        .append("PENDÊNCIA ").append(index + 1).append('/')
+                        .append(pending.size()).append("\n\n")
+                        .append("Arquivo: ").append(result.file()).append('\n')
+                        .append("Local: SubreportExpression ").append(result.referenceIndex()).append('\n')
+                        .append("Expressão: ").append(result.expression()).append('\n')
+                        .append("Status: ").append(result.status()).append('\n');
+                appendSubreportGuidance(text, result);
+                if (!result.candidates().isEmpty()) {
+                    text.append("Candidatos encontrados:\n");
+                    result.candidates().forEach(candidate ->
+                            text.append("  - ").append(candidate).append('\n'));
+                }
+                text.append('\n');
+            }
+        }
+        Files.writeString(destination, text, StandardCharsets.UTF_8);
+    }
+
+    private static void appendSubreportGuidance(StringBuilder text,
+                                                SubreportReferenceResult result) {
+        if (result.status() == SubreportResolutionStatus.AMBIGUOUS) {
+            text.append("Problema: MAIS DE UM CANDIDATO. Existem vários JRXML com o nome referenciado.\n")
+                    .append("Ação: Confirmar qual caminho é utilizado pelo Jasper em execução. Nenhum arquivo foi escolhido automaticamente.\n");
+        } else if (result.status() == SubreportResolutionStatus.DYNAMIC) {
+            text.append("Problema: CAMINHO DINÂMICO. A expressão depende de parâmetro, variável ou concatenação.\n")
+                    .append("Ação: Conferir o valor produzido em execução e se o JRXML correspondente acompanha o relatório.\n");
+        } else {
+            text.append("Problema: ARQUIVO NÃO ENCONTRADO. Nenhum JRXML com o nome referenciado foi recebido.\n")
+                    .append("Ação: Incluir o complement ou arquivo que contém o subreport antes da publicação.\n");
+        }
     }
 
     private static boolean requiresAttention(ConversionStatus status) {
@@ -354,7 +407,11 @@ public final class ConversionReportWriter {
                 QueryStrings JRXML não SQL ignoradas: %d
                 Falhas em JRXML: %d
                 Referências de subreport: %d
-                Subreports resolvidos localmente: %d
+                Subreports localizados no conjunto: %d
+                Subreports resolvidos sem ambiguidade: %d
+                Subreports ambíguos: %d
+                Subreports dinâmicos: %d
+                Subreports ausentes: %d
                 Arquivos Groovy: %d
                 SQLs Groovy identificados: %d
                 SQLs Groovy convertidos: %d
@@ -362,7 +419,9 @@ public final class ConversionReportWriter {
                 Falhas em Groovy: %d
                 """.formatted(Instant.now(), summary.jrxmlFiles(), summary.queryEntries(),
                 summary.convertedQueries(), summary.emptyQueries(), summary.ignoredQueries(), summary.failedQueries(),
-                summary.subreportReferences(), summary.resolvedSubreports(), summary.groovyFiles(),
+                summary.subreportReferences(), summary.locatedSubreports(), summary.resolvedSubreports(),
+                summary.ambiguousSubreports(), summary.dynamicSubreports(), summary.missingSubreports(),
+                summary.groovyFiles(),
                 summary.groovySqlEntries(), summary.convertedGroovySql(), summary.reviewGroovySql(),
                 summary.failedGroovySql());
         Files.writeString(destination, text, StandardCharsets.UTF_8);

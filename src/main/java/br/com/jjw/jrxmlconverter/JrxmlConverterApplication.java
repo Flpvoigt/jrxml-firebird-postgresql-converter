@@ -44,10 +44,15 @@ public final class JrxmlConverterApplication {
             if (!options.dryRun()) {
                 new ConversionReportWriter().write(output, run);
                 if (run.groupedByProject()) {
-                    System.out.println("Relatórios separados por projeto em: " + output);
+                    System.out.println("Estrutura convertida preservada em: " + output);
+                    System.out.println("Diagnósticos separados por projeto em: "
+                            + output.resolve("_conversion-reports/projects"));
                 } else {
-                    System.out.println("Relatório JRXML: " + output.resolve("jrxml/conversion-report.csv"));
-                    System.out.println("Relatório Groovy: " + output.resolve("groovy/conversion-report.csv"));
+                    System.out.println("Estrutura convertida preservada em: " + output);
+                    System.out.println("Relatório JRXML: "
+                            + output.resolve("_conversion-reports/jrxml/conversion-report.csv"));
+                    System.out.println("Relatório Groovy: "
+                            + output.resolve("_conversion-reports/groovy/conversion-report.csv"));
                 }
             }
             return run.summary().hasProblems() ? 3 : 0;
@@ -83,8 +88,13 @@ public final class JrxmlConverterApplication {
         System.out.println("Consultas JRXML vazias: " + summary.emptyQueries());
         System.out.println("Consultas JRXML não SQL ignoradas: " + summary.ignoredQueries());
         System.out.println("Falhas em JRXML: " + summary.failedQueries());
-        System.out.println("Subreports resolvidos: " + summary.resolvedSubreports()
+        System.out.println("Subreports localizados: " + summary.locatedSubreports()
                 + "/" + summary.subreportReferences());
+        System.out.println("Subreports resolvidos sem ambiguidade: "
+                + summary.resolvedSubreports());
+        System.out.println("Subreports ambíguos: " + summary.ambiguousSubreports());
+        System.out.println("Subreports dinâmicos: " + summary.dynamicSubreports());
+        System.out.println("Subreports ausentes: " + summary.missingSubreports());
         System.out.println("Groovy: " + summary.groovyFiles());
         System.out.println((options.dryRun() ? "SQLs Groovy validados: " : "SQLs Groovy convertidos: ")
                 + summary.convertedGroovySql());

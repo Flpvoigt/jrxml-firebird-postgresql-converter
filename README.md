@@ -83,17 +83,24 @@ java -jar target\jrxml-converter-0.2.0-SNAPSHOT.jar `
 ```
 
 Nas execuções seguintes, acrescente `--overwrite`. O programa nunca altera a
-entrada. A saída é organizada assim:
+entrada. A árvore recebida é reproduzida na saída; somente o conteúdo dos
+arquivos `.jrxml` e `.groovy` é convertido. Arquivos auxiliares, imagens,
+configurações e descritores são copiados sem alteração. Pastas de build, IDE,
+Git e saídas anteriores são ignoradas.
 
 ```text
 output\postgresql\
-├── jrxml\                         # JRXML convertidos e relatórios próprios
-│   ├── conversion-report.csv
-│   └── review-required.txt         # pendências JRXML em formato legível
-├── groovy\                        # Groovy com estrutura relativa e relatório próprio
-│   ├── conversion-report.csv
-│   └── review-required.txt         # pendências Groovy em formato legível
-└── conversion-summary.txt         # resumo geral
+├── src\main\resources\...         # mesma estrutura recebida, com JRXML/Groovy convertidos
+├── pom.xml                         # arquivo auxiliar preservado
+└── _conversion-reports\           # diagnósticos fora da árvore do projeto
+    ├── jrxml\
+    │   ├── conversion-report.csv
+    │   └── review-required.txt
+    ├── groovy\
+    │   ├── conversion-report.csv
+    │   └── review-required.txt
+    ├── subreport-review-required.txt
+    └── conversion-summary.txt
 ```
 
 Os arquivos `conversion-report.csv` contêm somente itens que exigem atenção
@@ -106,6 +113,12 @@ trecho limitado do SQL original.
 
 O diretório `jrxml` também recebe um `review-required.txt` com a mesma estrutura
 explicativa para cada queryString que falhou ou exige revisão.
+
+As referências de subreport são verificadas contra todos os JRXML recebidos na
+mesma execução, inclusive os que pertencem a outro projeto. O resumo separa
+arquivos locais, compartilhados, ambíguos, dinâmicos e ausentes. Uma referência
+com mais de um candidato não é escolhida por nome: ela é registrada em
+`subreport-review-required.txt` com todos os caminhos possíveis.
 
 SQLs Groovy montados por concatenação ou em fragmentos são preservados sem
 alteração e recebem o estado `REVIEW` no CSV, com arquivo e linha. Falhas e
