@@ -88,7 +88,8 @@ public final class GroovyProcessor {
                 QueryResult query = sqlConverter.convert(
                         relativeFile, sqlIndex, tokenized.sql(), !hasExplicitDatabaseConnection);
                 if (query.succeeded()) {
-                    replacement = restoreInterpolations(query.convertedSql(), tokenized.tokens());
+                    replacement = prepareConvertedGString(
+                            query.convertedSql(), tokenized.tokens(), literal.interpolated());
                     replacement = preserveOuterWhitespace(sql, replacement);
                     result = GroovySqlResult.converted(relativeFile, sqlIndex, literal.line(), sql,
                             replacement, tokenized.tokens().size());
@@ -99,7 +100,8 @@ public final class GroovyProcessor {
                     QueryResult lenient = sqlConverter.convertLenientDynamic(
                             relativeFile, sqlIndex, tokenized.sql());
                     if (lenient.succeeded()) {
-                        replacement = restoreInterpolations(lenient.convertedSql(), tokenized.tokens());
+                        replacement = prepareConvertedGString(
+                                lenient.convertedSql(), tokenized.tokens(), literal.interpolated());
                         replacement = preserveOuterWhitespace(sql, replacement);
                         result = GroovySqlResult.converted(relativeFile, sqlIndex, literal.line(), sql,
                                 replacement, tokenized.tokens().size());
@@ -324,7 +326,8 @@ public final class GroovyProcessor {
     }
 
     private static Interpolation interpolationAt(String text, int index) {
-        if (text.charAt(index) != '$' || index + 1 >= text.length()) {
+        if (text.charAt(index) != '$' || index + 1 >= text.length()
+                || isEscaped(text, index)) {
             return null;
         }
         if (text.charAt(index + 1) == '{') {
@@ -406,6 +409,12 @@ public final class GroovyProcessor {
         int index = 0;
         int sequence = 0;
         while (index < sql.length()) {
+            if (sql.charAt(index) == '$' && isEscaped(sql, index)) {
+                protectedSql.setLength(protectedSql.length() - 1);
+                protectedSql.append('$');
+                index++;
+                continue;
+            }
             if (sql.charAt(index) == '$' && index + 1 < sql.length() && sql.charAt(index + 1) == '{') {
                 int expressionEnd = skipBalancedExpression(sql, index + 1);
                 if (expressionEnd > index + 2) {
@@ -436,6 +445,21 @@ public final class GroovyProcessor {
             protectedSql.append(sql.charAt(index++));
         }
         return new TokenizedGroovy(protectedSql.toString(), tokens);
+    }
+
+    private static String prepareConvertedGString(String convertedSql,
+                                                  Map<String, String> tokens,
+                                                  boolean interpolated) {
+        String escapedSql = interpolated ? convertedSql.replace("$", "\\$") : convertedSql;
+        return restoreInterpolations(escapedSql, tokens);
+    }
+
+    private static boolean isEscaped(String text, int index) {
+        int backslashes = 0;
+        for (int cursor = index - 1; cursor >= 0 && text.charAt(cursor) == '\\'; cursor--) {
+            backslashes++;
+        }
+        return backslashes % 2 != 0;
     }
 
     private static String restoreInterpolations(String sql, Map<String, String> tokens) {
