@@ -84,6 +84,25 @@ class GroovyProcessorTest {
     }
 
     @Test
+    void convertsEscapedDollarInFirebirdSystemTableInsideGString() {
+        String source = """
+                def sql = \"\"\"
+                    SELECT IIF(1 = 1, 'S', 'N') VALOR
+                    FROM RDB\\$DATABASE
+                \"\"\"
+                """;
+
+        var conversion = processor.convert(Path.of("sistema.groovy"), source, true);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertEquals(0, conversion.sqlResults().getFirst().dynamicExpressions());
+        assertEquals(1, countOccurrences(conversion.source(), "RDB\\$DATABASE"), conversion.source());
+        assertEquals(1, countOccurrences(conversion.source(), "IIF("), conversion.source());
+        assertDoesNotThrow(() -> new GroovyShell().parse(conversion.source()), conversion.source());
+    }
+
+    @Test
     void usesMultilineSafeLiteralWhenOriginalSqlHasSingleQuotes() {
         String source = "def item = [sql: 'SELECT FIRST 1 COD_EMPRESA FROM EMPRESAS']\n";
 
