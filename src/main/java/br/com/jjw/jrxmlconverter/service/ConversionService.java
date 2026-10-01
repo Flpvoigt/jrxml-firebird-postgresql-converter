@@ -8,6 +8,7 @@ import br.com.jjw.jrxmlconverter.xml.SecureXmlParser;
 import br.com.jjw.jrxmlconverter.xml.SubreportInspector;
 import org.w3c.dom.Document;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
@@ -60,24 +61,31 @@ public final class ConversionService {
         boolean groupedByProject = Files.isDirectory(input)
                 && shouldGroupByProject(discoveryRoot, allFiles);
         if (!options.dryRun() && options.overwrite()) {
-            clearOutputs(output, discoveryRoot, allFiles, groupedByProject);
+            clearDirectory(output);
+        }
+        if (!options.dryRun() && Files.isDirectory(input)) {
+            copySupportingFiles(input, output, options.overwrite());
         }
         List<QueryResult> queryResults = new ArrayList<>();
         List<GroovySqlResult> groovyResults = new ArrayList<>();
+        List<SubreportReferenceResult> subreportResults = new ArrayList<>();
+        SubreportInspector.Catalog subreportCatalog = subreportInspector.catalog(jrxmlFiles);
         int subreportReferences = 0;
+        int locatedSubreports = 0;
         int resolvedSubreports = 0;
+        int ambiguousSubreports = 0;
+        int dynamicSubreports = 0;
+        int missingSubreports = 0;
 
         for (Path source : jrxmlFiles) {
             Path relative = discoveryRoot.relativize(source);
-            ProjectLocation location = locate(discoveryRoot, source, groupedByProject);
             String xml;
             try {
                 xml = Files.readString(source, StandardCharsets.UTF_8);
-            } catch (Exception exception) {
+            } catch (IOException exception) {
                 queryResults.add(QueryResult.failed(relative, 0, "", failureMessage(exception)));
                 if (!options.dryRun()) {
-                    copyOriginal(output, location, "jrxml", resourceRelative(location.relative()),
-                            source, options.overwrite());
+                    copyOriginal(output, relative, source, options.overwrite());
                 }
                 continue;
             }
@@ -85,57 +93,59 @@ public final class ConversionService {
             JrxmlConversion conversion;
             try {
                 Document document = xmlParser.parse(xml, source);
-                SubreportStats stats = subreportInspector.inspect(document, source);
+                SubreportInspection inspection = subreportInspector.inspect(
+                        document, source, discoveryRoot, subreportCatalog);
+                SubreportStats stats = inspection.stats();
+                subreportResults.addAll(inspection.references());
                 subreportReferences += stats.total();
+                locatedSubreports += stats.located();
                 resolvedSubreports += stats.resolved();
+                ambiguousSubreports += stats.ambiguous();
+                dynamicSubreports += stats.dynamic();
+                missingSubreports += stats.missing();
                 conversion = jrxmlProcessor.convert(relative, xml, document);
                 queryResults.addAll(conversion.queryResults());
             } catch (Exception exception) {
                 queryResults.add(QueryResult.failed(relative, 0, xml, failureMessage(exception)));
                 if (!options.dryRun()) {
-                    Path jrxmlOutput = projectOutput(output, location, "jrxml");
-                    writeOutput(jrxmlOutput, resourceRelative(location.relative()), xml,
-                            options.overwrite());
+                    writeOutput(output, relative, xml, options.overwrite());
                 }
                 continue;
             }
             if (!options.dryRun()) {
-                Path jrxmlOutput = projectOutput(output, location, "jrxml");
-                writeOutput(jrxmlOutput, resourceRelative(location.relative()),
-                        conversion.xml(), options.overwrite());
+                writeOutput(output, relative, conversion.xml(), options.overwrite());
             }
         }
 
         for (Path source : groovyFiles) {
             Path relative = discoveryRoot.relativize(source);
-            ProjectLocation location = locate(discoveryRoot, source, groupedByProject);
-            Path destination = resourceRelative(location.relative());
             DecodedSource groovy;
             GroovyConversion conversion;
             try {
                 groovy = readGroovySource(source);
-                conversion = groovyProcessor.convert(relative, groovy.text());
+                conversion = groovyProcessor.convert(
+                        relative, groovy.text(), options.dualDatabaseGroovy());
                 groovyResults.addAll(conversion.sqlResults());
             } catch (Exception exception) {
                 groovyResults.add(GroovySqlResult.failed(relative, 0, 0, "", 0,
                         failureMessage(exception)));
                 if (!options.dryRun()) {
-                    copyOriginal(output, location, "groovy", destination, source,
-                            options.overwrite());
+                    copyOriginal(output, relative, source, options.overwrite());
                 }
                 continue;
             }
             if (!options.dryRun()) {
-                Path groovyOutput = projectOutput(output, location, "groovy");
-                writeOutput(groovyOutput, destination, conversion.source(),
+                writeOutput(output, relative, conversion.source(),
                         options.overwrite(), groovy.charset(), groovy.utf8Bom());
             }
         }
 
         ConversionSummary summary = summarize(
-                jrxmlFiles.size(), queryResults, subreportReferences, resolvedSubreports,
+                jrxmlFiles.size(), queryResults, subreportReferences, locatedSubreports,
+                resolvedSubreports, ambiguousSubreports, dynamicSubreports, missingSubreports,
                 groovyFiles.size(), groovyResults);
-        return new ConversionRun(summary, queryResults, groovyResults, groupedByProject);
+        return new ConversionRun(summary, queryResults, groovyResults, subreportResults,
+                groupedByProject);
     }
 
     private static void validatePaths(Path input, Path output, boolean dryRun) throws Exception {
@@ -205,7 +215,7 @@ public final class ConversionService {
                         pending.addLast(candidate);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (IOException | IllegalArgumentException ignored) {
                 // O processamento principal registrará a falha e manterá o arquivo original.
             }
         }
@@ -247,47 +257,21 @@ public final class ConversionService {
                 || Files.isDirectory(directory.resolve("src/main"));
     }
 
-    private static void clearOutputs(Path output, Path input, List<Path> files,
-                                     boolean groupedByProject) throws Exception {
-        if (!groupedByProject) {
-            clearDirectory(output.resolve("jrxml"));
-            clearDirectory(output.resolve("groovy"));
-            return;
-        }
-        Set<String> projects = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (Path file : files) {
-            projects.add(locate(input, file, true).project());
-        }
-        for (String project : projects) {
-            clearDirectory(output.resolve(project).resolve("jrxml"));
-            clearDirectory(output.resolve(project).resolve("groovy"));
-        }
-    }
-
-    private static ProjectLocation locate(Path input, Path file, boolean groupedByProject) {
-        Path relative = input.relativize(file);
-        if (!groupedByProject) {
-            return new ProjectLocation("", relative);
-        }
-        String project = relative.getName(0).toString();
-        Path insideProject = relative.getNameCount() == 1
-                ? relative.getFileName() : relative.subpath(1, relative.getNameCount());
-        return new ProjectLocation(project, insideProject);
-    }
-
-    private static Path projectOutput(Path output, ProjectLocation location, String type) {
-        return location.project().isEmpty()
-                ? output.resolve(type) : output.resolve(location.project()).resolve(type);
-    }
-
-    private static Path resourceRelative(Path relative) {
-        for (int index = 0; index < relative.getNameCount(); index++) {
-            if (relative.getName(index).toString().equalsIgnoreCase("resources")
-                    && index + 1 < relative.getNameCount()) {
-                return relative.subpath(index + 1, relative.getNameCount());
+    private static void copySupportingFiles(Path input, Path output, boolean overwrite)
+            throws Exception {
+        try (Stream<Path> paths = Files.walk(input)) {
+            for (Path source : paths.filter(Files::isRegularFile)
+                    .filter(path -> !isIgnoredPath(input, path))
+                    .filter(path -> !isConvertibleSource(path))
+                    .toList()) {
+                copyOriginal(output, input.relativize(source), source, overwrite);
             }
         }
-        return relative;
+    }
+
+    private static boolean isConvertibleSource(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".jrxml") || name.endsWith(".groovy");
     }
 
     private static void clearDirectory(Path directory) throws Exception {
@@ -330,9 +314,9 @@ public final class ConversionService {
         Files.write(destination, encoded);
     }
 
-    private static void copyOriginal(Path output, ProjectLocation location, String type,
-                                     Path relative, Path source, boolean overwrite) throws Exception {
-        Path destination = projectOutput(output, location, type).resolve(relative);
+    private static void copyOriginal(Path output, Path relative, Path source,
+                                     boolean overwrite) throws Exception {
+        Path destination = output.resolve(relative);
         if (Files.exists(destination) && !overwrite) {
             throw new IllegalArgumentException("Arquivo de saída já existe; use --overwrite: " + destination);
         }
@@ -364,7 +348,8 @@ public final class ConversionService {
     }
 
     private static ConversionSummary summarize(int jrxmlFiles, List<QueryResult> results,
-                                                int references, int resolved,
+                                                int references, int located, int resolved,
+                                                int ambiguous, int dynamic, int missing,
                                                 int groovyFiles, List<GroovySqlResult> groovyResults) {
         long converted = results.stream().filter(r -> r.status() == ConversionStatus.CONVERTED).count();
         long empty = results.stream().filter(r -> r.status() == ConversionStatus.EMPTY).count();
@@ -377,13 +362,11 @@ public final class ConversionService {
         long failedGroovy = groovyResults.stream()
                 .filter(r -> r.status() == ConversionStatus.FAILED).count();
         return new ConversionSummary(jrxmlFiles, results.size(), converted, empty, ignored, failed,
-                references, resolved, groovyFiles, groovyResults.size(), convertedGroovy,
-                reviewGroovy, failedGroovy);
+                references, located, resolved, ambiguous, dynamic, missing, groovyFiles,
+                groovyResults.size(), convertedGroovy, reviewGroovy, failedGroovy);
     }
 
     private record DecodedSource(String text, Charset charset, boolean utf8Bom) {
     }
 
-    private record ProjectLocation(String project, Path relative) {
-    }
 }

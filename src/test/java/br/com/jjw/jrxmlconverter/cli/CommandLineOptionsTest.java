@@ -26,6 +26,16 @@ class CommandLineOptionsTest {
     }
 
     @Test
+    void parsesDualDatabaseGroovyMode() {
+        var options = CommandLineOptions.parse(new String[]{
+                "--input", "complements", "--output", "saida",
+                "--dual-database-groovy"
+        });
+
+        assertTrue(options.dualDatabaseGroovy());
+    }
+
+    @Test
     void rejectsMissingInput() {
         assertThrows(IllegalArgumentException.class,
                 () -> CommandLineOptions.parse(new String[]{"--dry-run"}));

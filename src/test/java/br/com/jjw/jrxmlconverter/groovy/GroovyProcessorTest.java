@@ -3,6 +3,7 @@ package br.com.jjw.jrxmlconverter.groovy;
 import br.com.jjw.jrxmlconverter.domain.ConversionStatus;
 import br.com.jjw.jrxmlconverter.metadata.SchemaMetadata;
 import br.com.jjw.jrxmlconverter.sql.FirebirdToPostgresSqlConverter;
+import groovy.lang.GroovyShell;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GroovyProcessorTest {
@@ -57,6 +59,54 @@ class GroovyProcessorTest {
         assertTrue(conversion.source().contains("'${item.chave}'"), conversion.source());
         assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
                 conversion.source());
+    }
+
+    @Test
+    void generatesFirebirdAndPostgreSqlBranchesInDualDatabaseMode() {
+        String source = "def sql = \"\"\"\n"
+                + "    SELECT FIRST 1 P.CODIGO\n"
+                + "    FROM PRODUTOS P\n"
+                + "    WHERE P.CODIGO = ${codigo}\n"
+                + "\"\"\"\n"
+                + "def dados = queryList(sql)\n";
+
+        var conversion = processor.convert(Path.of("produtos.groovy"), source, true);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertTrue(conversion.source().contains("isPostgreSql() ? \"\"\""), conversion.source());
+        assertTrue(conversion.source().contains("SELECT FIRST 1 P.CODIGO"), conversion.source());
+        assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
+                conversion.source());
+        assertEquals(2, countOccurrences(conversion.source(), "${codigo}"), conversion.source());
+        assertTrue(conversion.source().endsWith("def dados = queryList(sql)\n"),
+                conversion.source());
+    }
+
+    @Test
+    void usesMultilineSafeLiteralWhenOriginalSqlHasSingleQuotes() {
+        String source = "def item = [sql: 'SELECT FIRST 1 COD_EMPRESA FROM EMPRESAS']\n";
+
+        var conversion = processor.convert(Path.of("empresa.groovy"), source, true);
+
+        assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
+                conversion.sqlResults().getFirst().message());
+        assertTrue(conversion.source().contains("isPostgreSql() ? '''"), conversion.source());
+        assertTrue(conversion.source().contains(": 'SELECT FIRST 1 COD_EMPRESA FROM EMPRESAS'"),
+                conversion.source());
+        assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
+                conversion.source());
+        assertDoesNotThrow(() -> new GroovyShell().parse(conversion.source()), conversion.source());
+    }
+
+    @Test
+    void keepsReviewSqlUnchangedInDualDatabaseMode() {
+        String source = "def sql = \"SELECT FIRST 1 CODIGO FROM PRODUTOS \" + where\n";
+
+        var conversion = processor.convert(Path.of("dinamico.groovy"), source, true);
+
+        assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
+        assertEquals(source, conversion.source());
     }
 
     @Test
@@ -304,5 +354,15 @@ class GroovyProcessorTest {
 
         assertEquals(ConversionStatus.REVIEW, conversion.sqlResults().getFirst().status());
         assertEquals(source, conversion.source());
+    }
+
+    private static int countOccurrences(String text, String value) {
+        int count = 0;
+        int position = 0;
+        while ((position = text.indexOf(value, position)) >= 0) {
+            count++;
+            position += value.length();
+        }
+        return count;
     }
 }

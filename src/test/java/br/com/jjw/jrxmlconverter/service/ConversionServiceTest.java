@@ -23,7 +23,7 @@ class ConversionServiceTest {
     Path temporaryDirectory;
 
     @Test
-    void writesJrxmlAndGroovyToSeparateOutputTrees() throws Exception {
+    void preservesTheInputTreeAndSeparatesOnlyDiagnosticFiles() throws Exception {
         Path input = Files.createDirectory(temporaryDirectory.resolve("input"));
         Path output = temporaryDirectory.resolve("output");
         Files.writeString(input.resolve("relatorio.jrxml"), """
@@ -36,6 +36,7 @@ class ConversionServiceTest {
         Files.writeString(nestedGroovyDirectory.resolve("rotina.groovy"), """
                 def sql = "SELECT FIRST 1 ID FROM PRODUTOS WHERE CODIGO = ${codigo}"
                 """);
+        Files.writeString(input.resolve("README.md"), "arquivo de apoio");
         Path staleDirectory = Files.createDirectories(output.resolve("groovy/tray"));
         Files.writeString(staleDirectory.resolve("arquivo-antigo.groovy"), "conteúdo antigo");
         Path staleJrxmlDirectory = Files.createDirectories(output.resolve("jrxml/antigos"));
@@ -51,13 +52,15 @@ class ConversionServiceTest {
 
         assertEquals(1, run.summary().jrxmlFiles());
         assertEquals(1, run.summary().groovyFiles());
-        assertTrue(Files.exists(output.resolve("jrxml/relatorio.jrxml")));
-        assertTrue(Files.exists(output.resolve("groovy/endpoints/tray/rotina.groovy")));
+        assertTrue(Files.exists(output.resolve("relatorio.jrxml")));
+        assertTrue(Files.exists(output.resolve("endpoints/tray/rotina.groovy")));
+        assertEquals("arquivo de apoio", Files.readString(output.resolve("README.md")));
         assertTrue(Files.notExists(output.resolve("groovy/tray")));
         assertTrue(Files.notExists(output.resolve("jrxml/antigos")));
-        assertTrue(Files.exists(output.resolve("jrxml/conversion-report.csv")));
-        assertTrue(Files.exists(output.resolve("groovy/conversion-report.csv")));
-        assertTrue(Files.notExists(output.resolve("relatorio.jrxml")));
+        assertTrue(Files.exists(output.resolve(
+                "_conversion-reports/jrxml/conversion-report.csv")));
+        assertTrue(Files.exists(output.resolve(
+                "_conversion-reports/groovy/conversion-report.csv")));
     }
 
     @Test
@@ -77,7 +80,7 @@ class ConversionServiceTest {
         var options = new CommandLineOptions(input, output, false, false, false);
 
         var run = service.execute(options);
-        byte[] convertedBytes = Files.readAllBytes(output.resolve("groovy/sql-utils.groovy"));
+        byte[] convertedBytes = Files.readAllBytes(output.resolve("sql-utils.groovy"));
         String converted = new String(convertedBytes, windows1252);
 
         assertEquals(1, run.summary().convertedGroovySql());
@@ -102,8 +105,8 @@ class ConversionServiceTest {
         var run = service.execute(options);
 
         assertEquals(2, run.summary().groovyFiles());
-        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/groovy/a/rotina.groovy")));
-        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/groovy/b/rotina.groovy")));
+        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/a/rotina.groovy")));
+        assertTrue(Files.exists(temporaryDirectory.resolve("duplicate-output/b/rotina.groovy")));
     }
 
     @Test
@@ -133,12 +136,12 @@ class ConversionServiceTest {
         assertTrue(run.groupedByProject());
         assertEquals(2, run.summary().groovyFiles());
         assertTrue(Files.exists(output.resolve(
-                "projeto-101/groovy/besser-core/endpoints/tray/sql-utils.groovy")));
+                "projeto-101/src/main/resources/besser-core/endpoints/tray/sql-utils.groovy")));
         assertTrue(Files.exists(output.resolve(
-                "projeto-102/groovy/besser-core/endpoints/tray/sql-utils.groovy")));
+                "projeto-102/src/main/resources/besser-core/endpoints/tray/sql-utils.groovy")));
         assertTrue(Files.exists(output.resolve(
-                "projeto-101/groovy/conversion-report.csv")));
-        assertTrue(Files.notExists(output.resolve("projeto-101/groovy/target")));
+                "_conversion-reports/projects/projeto-101/groovy/conversion-report.csv")));
+        assertTrue(Files.notExists(output.resolve("projeto-101/target")));
     }
 
     @Test
@@ -162,10 +165,10 @@ class ConversionServiceTest {
 
         assertEquals(1, jrxmlRun.summary().jrxmlFiles());
         assertEquals(1, jrxmlRun.summary().convertedQueries());
-        assertTrue(Files.exists(temporaryDirectory.resolve("single-jrxml-output/jrxml/unico.jrxml")));
+        assertTrue(Files.exists(temporaryDirectory.resolve("single-jrxml-output/unico.jrxml")));
         assertEquals(1, groovyRun.summary().groovyFiles());
         assertEquals(1, groovyRun.summary().convertedGroovySql());
-        assertTrue(Files.exists(temporaryDirectory.resolve("single-groovy-output/groovy/unico.groovy")));
+        assertTrue(Files.exists(temporaryDirectory.resolve("single-groovy-output/unico.groovy")));
     }
 
     @Test
@@ -192,8 +195,8 @@ class ConversionServiceTest {
 
         assertEquals(2, run.summary().jrxmlFiles());
         assertEquals(2, run.summary().convertedQueries());
-        assertTrue(Files.exists(output.resolve("jrxml/master.jrxml")));
-        assertTrue(Files.exists(output.resolve("jrxml/itens.jrxml")));
+        assertTrue(Files.exists(output.resolve("master.jrxml")));
+        assertTrue(Files.exists(output.resolve("itens.jrxml")));
     }
 
     @Test
@@ -216,8 +219,8 @@ class ConversionServiceTest {
         assertEquals(2, run.summary().jrxmlFiles());
         assertEquals(1, run.summary().convertedQueries());
         assertEquals(1, run.summary().failedQueries());
-        assertEquals(invalid, Files.readString(output.resolve("jrxml/invalido.jrxml")));
-        assertTrue(Files.readString(output.resolve("jrxml/valido.jrxml"))
+        assertEquals(invalid, Files.readString(output.resolve("invalido.jrxml")));
+        assertTrue(Files.readString(output.resolve("valido.jrxml"))
                 .toLowerCase().contains("fetch next 1 rows only"));
     }
 

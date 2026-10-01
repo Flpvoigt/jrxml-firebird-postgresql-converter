@@ -39,7 +39,14 @@ public final class GroovyProcessor {
     }
 
     public GroovyConversion convert(Path relativeFile, String source) {
-        source = paginationRewriter.rewrite(source);
+        return convert(relativeFile, source, false);
+    }
+
+    public GroovyConversion convert(Path relativeFile, String source,
+                                    boolean dualDatabaseMode) {
+        if (!dualDatabaseMode) {
+            source = paginationRewriter.rewrite(source);
+        }
         GroovyAstAnalyzer.Analysis ast = astAnalyzer.analyze(source);
         boolean hasExplicitDatabaseConnection = EXPLICIT_DATABASE_CONNECTION.matcher(source).find();
         List<StringLiteral> literals = findStringLiterals(source);
@@ -113,13 +120,35 @@ public final class GroovyProcessor {
 
             results.add(result);
             if (result.succeeded()) {
-                convertedSource.append(source, copiedUntil, literal.contentStart()).append(replacement);
-                copiedUntil = literal.contentEnd();
+                if (dualDatabaseMode && !replacement.equals(sql)) {
+                    convertedSource.append(source, copiedUntil, literal.delimiterStart())
+                            .append(dualDatabaseExpression(source, literal, replacement));
+                    copiedUntil = literal.delimiterEnd();
+                } else {
+                    convertedSource.append(source, copiedUntil, literal.contentStart())
+                            .append(replacement);
+                    copiedUntil = literal.contentEnd();
+                }
             }
         }
 
         convertedSource.append(source, copiedUntil, source.length());
         return new GroovyConversion(convertedSource.toString(), results);
+    }
+
+    private static String dualDatabaseExpression(String source, StringLiteral literal,
+                                                 String postgresSql) {
+        String firebirdLiteral = source.substring(
+                literal.delimiterStart(), literal.delimiterEnd());
+        char quote = source.charAt(literal.delimiterStart());
+        String postgresDelimiter = String.valueOf(quote).repeat(3);
+        String escapedPostgresSql = postgresSql.replace(
+                postgresDelimiter, "\\" + postgresDelimiter);
+        String postgresLiteral = postgresDelimiter + escapedPostgresSql + postgresDelimiter;
+
+        // O PostgreSQL precisa ser reconhecido explicitamente. Caso a propriedade esteja
+        // ausente ou tenha um valor desconhecido, preservamos o SQL Firebird original.
+        return "(isPostgreSql() ? " + postgresLiteral + " : " + firebirdLiteral + ")";
     }
 
     private static String unresolvedDynamicStructure(String source, StringLiteral literal, String sql,
@@ -200,13 +229,16 @@ public final class GroovyProcessor {
                 }
                 continue;
             }
-            if (current == '\'' || current == '"') {
-                quoted = true;
-                quote = current;
-            } else if (current == '(') {
-                depth++;
-            } else if (current == ')') {
-                depth--;
+            switch (current) {
+                case '\'', '"' -> {
+                    quoted = true;
+                    quote = current;
+                }
+                case '(' -> depth++;
+                case ')' -> depth--;
+                default -> {
+                    // Os demais caracteres não alteram o nível de parênteses.
+                }
             }
         }
         return depth > 0;

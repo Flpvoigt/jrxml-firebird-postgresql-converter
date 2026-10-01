@@ -65,6 +65,13 @@ A AST não substitui o jOOQ. Ela entende a estrutura do código Groovy e fornece
 contexto para as interpolações; o jOOQ continua responsável pela análise e pela
 conversão do SQL Firebird para PostgreSQL.
 
+No modo opcional `--dual-database-groovy`, cada SQL convertido com sucesso é
+emitido junto do literal Firebird original. O script gerado consulta
+`isPostgreSql()`, método fornecido pelo `besser-scriptlet`, e escolhe a versão
+correta em tempo de execução conforme `jpa.jdbc.driver`. A versão PostgreSQL usa
+literais multilinha para que a formatação produzida pelo conversor continue
+sendo Groovy válido. Estados `REVIEW` e `FAILED` permanecem intactos.
+
 As regras adicionais cobrem paginação no nível principal e em subconsultas,
 funções selecionáveis no `FROM`, `DATEADD`, `DATEDIFF`, `LIST`, `GEN_ID`,
 `ASCII_CHAR`, `STARTING WITH`, `CONTAINING`, `WITH LOCK`, `RDB$DATABASE` e o
