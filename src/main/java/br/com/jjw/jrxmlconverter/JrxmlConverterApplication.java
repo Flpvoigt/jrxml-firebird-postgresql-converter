@@ -82,6 +82,9 @@ public final class JrxmlConverterApplication {
         if (output != null) {
             System.out.println("Saída: " + output);
         }
+        if (options.dualDatabaseGroovy()) {
+            System.out.println("Groovy: modo compatível com Firebird e PostgreSQL");
+        }
         System.out.println("JRXML: " + summary.jrxmlFiles());
         System.out.println((options.dryRun() ? "Consultas JRXML validadas: " : "Consultas JRXML convertidas: ")
                 + summary.convertedQueries());
@@ -117,6 +120,7 @@ public final class JrxmlConverterApplication {
                   --overwrite   Permite substituir arquivos existentes somente na saída.
                   --dry-run     Analisa e converte em memória, sem escrever arquivos.
                   --schema-metadata  JSON com as chaves das tabelas extraídas do banco.
+                  --dual-database-groovy  Preserva o SQL Firebird e inclui a versão PostgreSQL nos Groovys.
                   --help        Exibe esta ajuda.
                 """);
     }

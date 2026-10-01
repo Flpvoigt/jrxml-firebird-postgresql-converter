@@ -198,6 +198,41 @@ metadados do schema ou um arquivo de mapeamento de chaves. SQLs montados por
 concatenação e erros sintáticos já existentes na origem também não são
 consertados por suposição.
 
+## Groovy compatível com os dois bancos
+
+A opção `--dual-database-groovy` mantém o SQL Firebird original e acrescenta a
+versão convertida para PostgreSQL no mesmo arquivo Groovy. A escolha acontece em
+tempo de execução por meio de `isPostgreSql()`, disponibilizado pelo
+`besser-scriptlet`:
+
+```groovy
+def sql = (isPostgreSql() ? """
+    select CODIGO from PRODUTOS fetch next 1 rows only
+""" : """
+    SELECT FIRST 1 CODIGO FROM PRODUTOS
+""")
+```
+
+O PostgreSQL somente é selecionado quando o driver configurado em
+`jpa.jdbc.driver` é reconhecido explicitamente. Se a propriedade estiver ausente
+ou for desconhecida, o SQL Firebird original é preservado como alternativa
+segura. Consultas marcadas como `REVIEW` ou `FAILED` não são embrulhadas nem
+alteradas.
+
+Exemplo de execução:
+
+```powershell
+& "C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot\bin\java.exe" `
+  -jar ".\target\jrxml-converter-0.2.0-SNAPSHOT.jar" `
+  --input "C:\caminho\dos\complements" `
+  --output ".\output\complements-dual" `
+  --overwrite `
+  --dual-database-groovy
+```
+
+Esse modo afeta somente arquivos Groovy. Os JRXML continuam seguindo o fluxo de
+conversão normal, pois não herdam os métodos do `BesserScript`.
+
 ## Uso
 
 Código de uso interno. A publicação do repositório não concede licença para

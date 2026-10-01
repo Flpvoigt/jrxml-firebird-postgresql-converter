@@ -8,6 +8,7 @@ import br.com.jjw.jrxmlconverter.xml.SecureXmlParser;
 import br.com.jjw.jrxmlconverter.xml.SubreportInspector;
 import org.w3c.dom.Document;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
@@ -81,7 +82,7 @@ public final class ConversionService {
             String xml;
             try {
                 xml = Files.readString(source, StandardCharsets.UTF_8);
-            } catch (Exception exception) {
+            } catch (IOException exception) {
                 queryResults.add(QueryResult.failed(relative, 0, "", failureMessage(exception)));
                 if (!options.dryRun()) {
                     copyOriginal(output, relative, source, options.overwrite());
@@ -122,7 +123,8 @@ public final class ConversionService {
             GroovyConversion conversion;
             try {
                 groovy = readGroovySource(source);
-                conversion = groovyProcessor.convert(relative, groovy.text());
+                conversion = groovyProcessor.convert(
+                        relative, groovy.text(), options.dualDatabaseGroovy());
                 groovyResults.addAll(conversion.sqlResults());
             } catch (Exception exception) {
                 groovyResults.add(GroovySqlResult.failed(relative, 0, 0, "", 0,
@@ -213,7 +215,7 @@ public final class ConversionService {
                         pending.addLast(candidate);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (IOException | IllegalArgumentException ignored) {
                 // O processamento principal registrará a falha e manterá o arquivo original.
             }
         }
