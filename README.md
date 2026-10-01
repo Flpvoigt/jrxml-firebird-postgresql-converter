@@ -207,7 +207,7 @@ tempo de execução por meio de `isPostgreSql()`, disponibilizado pelo
 
 ```groovy
 def sql = (isPostgreSql() ? """
-    select CODIGO from PRODUTOS fetch next 1 rows only
+    select CODIGO from PRODUTOS limit 1
 """ : """
     SELECT FIRST 1 CODIGO FROM PRODUTOS
 """)

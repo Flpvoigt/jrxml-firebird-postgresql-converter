@@ -57,7 +57,7 @@ class GroovyProcessorTest {
         assertEquals(2, conversion.sqlResults().getFirst().dynamicExpressions());
         assertTrue(conversion.source().contains("${codigo}"), conversion.source());
         assertTrue(conversion.source().contains("'${item.chave}'"), conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
+        assertTrue(conversion.source().toLowerCase().contains("limit 1"),
                 conversion.source());
     }
 
@@ -76,7 +76,7 @@ class GroovyProcessorTest {
                 conversion.sqlResults().getFirst().message());
         assertTrue(conversion.source().contains("isPostgreSql() ? \"\"\""), conversion.source());
         assertTrue(conversion.source().contains("SELECT FIRST 1 P.CODIGO"), conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
+        assertTrue(conversion.source().toLowerCase().contains("limit 1"),
                 conversion.source());
         assertEquals(2, countOccurrences(conversion.source(), "${codigo}"), conversion.source());
         assertTrue(conversion.source().endsWith("def dados = queryList(sql)\n"),
@@ -94,7 +94,7 @@ class GroovyProcessorTest {
         assertTrue(conversion.source().contains("isPostgreSql() ? '''"), conversion.source());
         assertTrue(conversion.source().contains(": 'SELECT FIRST 1 COD_EMPRESA FROM EMPRESAS'"),
                 conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("fetch next 1 rows only"),
+        assertTrue(conversion.source().toLowerCase().contains("limit 1"),
                 conversion.source());
         assertDoesNotThrow(() -> new GroovyShell().parse(conversion.source()), conversion.source());
     }
@@ -153,9 +153,9 @@ class GroovyProcessorTest {
                 conversion.sqlResults().getFirst().message());
         assertTrue(conversion.source().contains("${quantidade}"), conversion.source());
         assertTrue(conversion.source().contains("${inicio}"), conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("offset ${inicio} rows"),
+        assertTrue(conversion.source().toLowerCase().contains("offset ${inicio}"),
                 conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("fetch next ${quantidade} rows only"),
+        assertTrue(conversion.source().toLowerCase().contains("limit ${quantidade}"),
                 conversion.source());
     }
 
@@ -194,7 +194,7 @@ class GroovyProcessorTest {
         assertEquals(ConversionStatus.CONVERTED, conversion.sqlResults().getFirst().status(),
                 conversion.sqlResults().getFirst().message());
         assertTrue(conversion.source().contains("${where}"), conversion.source());
-        assertTrue(conversion.source().toLowerCase().contains("fetch next 10 rows only"),
+        assertTrue(conversion.source().toLowerCase().contains("limit 10"),
                 conversion.source());
     }
 
@@ -321,7 +321,7 @@ class GroovyProcessorTest {
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
         assertTrue(conversion.source().contains(
-                "sqlFirst = \"offset ${page * size} rows fetch next ${size} rows only\""),
+                "sqlFirst = \"limit ${size} offset ${page * size}\""),
                 conversion.source());
         assertTrue(conversion.source().matches(
                 "(?s).*WHERE P\\.ATIVO = -1.*\\$\\{where}.*\\$\\{sqlFirst}\\s*\"\"\".*"),

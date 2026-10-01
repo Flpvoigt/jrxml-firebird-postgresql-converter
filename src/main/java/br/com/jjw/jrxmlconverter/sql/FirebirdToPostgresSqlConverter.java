@@ -44,6 +44,13 @@ public final class FirebirdToPostgresSqlConverter {
             "(?is)^(\\s*SELECT\\s+)FIRST\\s+(" + PAGINATION_VALUE + ")\\s+");
     private static final Pattern TOP_LEVEL_SKIP = Pattern.compile(
             "(?is)^(\\s*SELECT\\s+)SKIP\\s+(" + PAGINATION_VALUE + ")\\s+");
+    private static final Pattern RENDERED_OFFSET_FETCH = Pattern.compile(
+            "(?is)\\bOFFSET\\s+(" + PAGINATION_VALUE + ")\\s+ROWS\\s+"
+                    + "FETCH\\s+(?:FIRST|NEXT)\\s+(" + PAGINATION_VALUE + ")\\s+ROWS\\s+ONLY\\b");
+    private static final Pattern RENDERED_FETCH = Pattern.compile(
+            "(?is)\\bFETCH\\s+(?:FIRST|NEXT)\\s+(" + PAGINATION_VALUE + ")\\s+ROWS\\s+ONLY\\b");
+    private static final Pattern RENDERED_OFFSET = Pattern.compile(
+            "(?is)\\bOFFSET\\s+(" + PAGINATION_VALUE + ")\\s+ROWS\\b");
     private static final Pattern NESTED_FIRST_SKIP = Pattern.compile(
             "(?is)\\(\\s*SELECT\\s+FIRST\\s+(\\d+)\\s+SKIP\\s+(\\d+)\\s+");
     private static final Pattern NESTED_SKIP_FIRST = Pattern.compile(
@@ -142,7 +149,7 @@ public final class FirebirdToPostgresSqlConverter {
                         protectedSql.jasperExpressions().size());
             }
             Query parsed = postgres.parser().parseQuery(protectedSql.sql());
-            String converted = postgres.renderInlined(parsed);
+            String converted = normalizePostgresPagination(postgres.renderInlined(parsed));
             converted = restore(converted, protectedSql.tableFunctions());
             converted = appendPagination(converted, protectedSql.first(), protectedSql.skip());
             if (protectedSql.withLock()) {
@@ -320,13 +327,19 @@ public final class FirebirdToPostgresSqlConverter {
 
     private static String appendPagination(String sql, String first, String skip) {
         StringBuilder paginated = new StringBuilder(sql);
-        if (skip != null) {
-            paginated.append("\noffset ").append(skip).append(" rows");
-        }
         if (first != null) {
-            paginated.append("\nfetch next ").append(first).append(" rows only");
+            paginated.append("\nlimit ").append(first);
+        }
+        if (skip != null) {
+            paginated.append("\noffset ").append(skip);
         }
         return paginated.toString();
+    }
+
+    private static String normalizePostgresPagination(String sql) {
+        String normalized = RENDERED_OFFSET_FETCH.matcher(sql).replaceAll("limit $2 offset $1");
+        normalized = RENDERED_FETCH.matcher(normalized).replaceAll("limit $1");
+        return RENDERED_OFFSET.matcher(normalized).replaceAll("offset $1");
     }
 
     private static String rewriteNestedPaginationDirect(String sql) {
@@ -342,10 +355,10 @@ public final class FirebirdToPostgresSqlConverter {
             }
             String body = rewritten.substring(match.contentStart(), closing).stripTrailing();
             StringBuilder pagination = new StringBuilder();
+            pagination.append(" LIMIT ").append(match.first());
             if (match.skip() > 0) {
-                pagination.append(" OFFSET ").append(match.skip()).append(" ROWS");
+                pagination.append(" OFFSET ").append(match.skip());
             }
-            pagination.append(" FETCH NEXT ").append(match.first()).append(" ROWS ONLY");
             rewritten = rewritten.substring(0, match.opening()) + "(SELECT " + body + pagination
                     + rewritten.substring(closing);
         }
@@ -663,7 +676,8 @@ public final class FirebirdToPostgresSqlConverter {
             String nestedSql = fragment.substring(opening + 1, closing);
             try {
                 translated.append(fragment, cursor, opening + 1)
-                        .append(postgres.render(postgres.parser().parseQuery(nestedSql)))
+                        .append(normalizePostgresPagination(
+                                postgres.render(postgres.parser().parseQuery(nestedSql))))
                         .append(')');
             } catch (Exception ignored) {
                 translated.append(fragment, cursor, closing + 1);

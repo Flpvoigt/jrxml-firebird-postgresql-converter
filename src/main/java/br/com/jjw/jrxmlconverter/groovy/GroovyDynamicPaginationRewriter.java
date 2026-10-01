@@ -112,18 +112,18 @@ final class GroovyDynamicPaginationRewriter {
     private static String toPostgresPagination(String firebird) {
         Matcher matcher = FIRST_SKIP.matcher(firebird);
         if (matcher.matches()) {
-            return "offset " + matcher.group(2) + " rows fetch next " + matcher.group(1) + " rows only";
+            return "limit " + matcher.group(1) + " offset " + matcher.group(2);
         }
         matcher = SKIP_FIRST.matcher(firebird);
         if (matcher.matches()) {
-            return "offset " + matcher.group(1) + " rows fetch next " + matcher.group(2) + " rows only";
+            return "limit " + matcher.group(2) + " offset " + matcher.group(1);
         }
         matcher = FIRST.matcher(firebird);
         if (matcher.matches()) {
-            return "fetch next " + matcher.group(1) + " rows only";
+            return "limit " + matcher.group(1);
         }
         matcher = SKIP.matcher(firebird);
-        return matcher.matches() ? "offset " + matcher.group(1) + " rows" : null;
+        return matcher.matches() ? "offset " + matcher.group(1) : null;
     }
 
     private static LiteralBounds enclosingTripleQuotedLiteral(String source, int position) {

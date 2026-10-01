@@ -36,7 +36,7 @@ class FirebirdToPostgresSqlConverterTest {
                 "select first 10 id from produto where empresa = $P{empresa}");
 
         assertEquals(ConversionStatus.CONVERTED, result.status());
-        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+        assertTrue(result.convertedSql().toLowerCase().contains("limit 10"),
                 result.convertedSql());
         assertTrue(result.convertedSql().contains("$P{empresa}"));
         assertEquals(1, result.jasperTokens());
@@ -113,7 +113,7 @@ class FirebirdToPostgresSqlConverterTest {
                 "select (select first 1 -1 from itens i where i.id = p.id) ativo from produtos p");
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
-        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 1 rows only"),
+        assertTrue(result.convertedSql().toLowerCase().contains("limit 1"),
                 result.convertedSql());
         assertFalse(result.convertedSql().contains("?"), result.convertedSql());
     }
@@ -124,8 +124,8 @@ class FirebirdToPostgresSqlConverterTest {
                 "select (select first 10 skip 5 i.id from itens i order by i.id) id from produtos p");
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
-        assertTrue(result.convertedSql().toLowerCase().contains("offset 5 rows"), result.convertedSql());
-        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+        assertTrue(result.convertedSql().toLowerCase().contains("offset 5"), result.convertedSql());
+        assertTrue(result.convertedSql().toLowerCase().contains("limit 10"),
                 result.convertedSql());
     }
 
@@ -185,7 +185,7 @@ class FirebirdToPostgresSqlConverterTest {
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
         assertTrue(result.convertedSql().contains("__groovy_token_1__"), result.convertedSql());
-        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+        assertTrue(result.convertedSql().toLowerCase().contains("limit 10"),
                 result.convertedSql());
     }
 
@@ -243,7 +243,7 @@ class FirebirdToPostgresSqlConverterTest {
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
         String converted = result.convertedSql().toLowerCase();
-        assertTrue(converted.indexOf("fetch next 10 rows only") < converted.indexOf("for update"),
+        assertTrue(converted.indexOf("limit 10") < converted.indexOf("for update"),
                 result.convertedSql());
     }
 
@@ -253,7 +253,7 @@ class FirebirdToPostgresSqlConverterTest {
                 "SELECT FIRST 10 ID FROM PEDIDOS UNION ALL SELECT ID FROM HISTORICO");
 
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
-        assertTrue(result.convertedSql().toLowerCase().contains("fetch next 10 rows only"),
+        assertTrue(result.convertedSql().toLowerCase().contains("limit 10"),
                 result.convertedSql());
         assertTrue(result.convertedSql().contains("UNION ALL"), result.convertedSql());
     }
@@ -269,9 +269,9 @@ class FirebirdToPostgresSqlConverterTest {
         assertEquals(ConversionStatus.CONVERTED, result.status(), result.message());
         String converted = result.convertedSql().toLowerCase();
         assertTrue(converted.contains("union all"), result.convertedSql());
-        assertTrue(converted.contains("fetch next 1 rows only"), result.convertedSql());
-        assertTrue(converted.contains("offset 2 rows"), result.convertedSql());
-        assertTrue(converted.contains("fetch next 3 rows only"), result.convertedSql());
+        assertTrue(converted.contains("limit 1"), result.convertedSql());
+        assertTrue(converted.contains("offset 2"), result.convertedSql());
+        assertTrue(converted.contains("limit 3"), result.convertedSql());
         assertFalse(converted.contains(" first "), result.convertedSql());
         assertFalse(converted.contains(" skip "), result.convertedSql());
     }

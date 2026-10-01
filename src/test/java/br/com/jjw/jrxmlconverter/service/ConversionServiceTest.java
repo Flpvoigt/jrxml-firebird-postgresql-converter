@@ -85,7 +85,7 @@ class ConversionServiceTest {
 
         assertEquals(1, run.summary().convertedGroovySql());
         assertTrue(converted.contains("acentuação"), converted);
-        assertTrue(converted.toLowerCase().contains("fetch next 1 rows only"), converted);
+        assertTrue(converted.toLowerCase().contains("limit 1"), converted);
     }
 
     @Test
@@ -221,7 +221,7 @@ class ConversionServiceTest {
         assertEquals(1, run.summary().failedQueries());
         assertEquals(invalid, Files.readString(output.resolve("invalido.jrxml")));
         assertTrue(Files.readString(output.resolve("valido.jrxml"))
-                .toLowerCase().contains("fetch next 1 rows only"));
+                .toLowerCase().contains("limit 1"));
     }
 
     @Test
