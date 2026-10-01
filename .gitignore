@@ -1,4 +1,5 @@
 /target/
+/bin/
 /output/
 /.github/modernize/
 /.idea/
